@@ -543,6 +543,20 @@ describe('isBookingLocked', () => {
         const res = { viewMode: 'week' };
         expect(isBookingLocked('2024-12-29', 0, res, today)).toBe(true);
     });
+
+    test('cross-year boundary: Dec 31 locked when today is Jan 1', () => {
+        const res = {};
+        const jan1 = new Date(2025, 0, 1);
+        // Dec 31 = week starting Dec 29, dayIndex 2
+        expect(isBookingLocked('2024-12-29', 2, res, jan1)).toBe(true);
+    });
+
+    test('res parameter is ignored (viewMode has no effect)', () => {
+        const noMode = {};
+        const bogus = { viewMode: 'bogus' };
+        expect(isBookingLocked('2025-01-05', 1, noMode, today))
+            .toBe(isBookingLocked('2025-01-05', 1, bogus, today));
+    });
 });
 
 // ============================================================
@@ -586,6 +600,32 @@ describe('isBookingAnonymized', () => {
         const res = { viewMode: 'week' };
         // Week of Dec 29 is previous week
         expect(isBookingAnonymized('2024-12-29', 0, res, today)).toBe(true);
+    });
+
+    test('anonymityBufferMonths = 1: booking before cutoff IS anonymized', () => {
+        const res = { anonymityBufferMonths: 1 };
+        // Today: Jan 8, 2025. Cutoff: Dec 1, 2024.
+        // Nov 15, 2024 is before cutoff → anonymized
+        expect(isBookingAnonymized('2024-11-10', 5, res, today)).toBe(true);
+    });
+
+    test('anonymityBufferMonths = 1: booking after cutoff is NOT anonymized', () => {
+        const res = { anonymityBufferMonths: 1 };
+        // Today: Jan 8, 2025. Cutoff: Dec 1, 2024.
+        // Dec 15, 2024 is after cutoff → NOT anonymized
+        expect(isBookingAnonymized('2024-12-15', 0, res, today)).toBe(false);
+    });
+
+    test('anonymityBufferMonths = 3: uses month-based cutoff independent of viewMode', () => {
+        const resWeek = { viewMode: 'week', anonymityBufferMonths: 3 };
+        const resDay = { viewMode: 'day', anonymityBufferMonths: 3 };
+        // Today: Jan 8, 2025. Cutoff: Oct 1, 2024.
+        // Sep 15 is before cutoff → anonymized in BOTH modes
+        expect(isBookingAnonymized('2024-09-15', 0, resWeek, today)).toBe(true);
+        expect(isBookingAnonymized('2024-09-15', 0, resDay, today)).toBe(true);
+        // Nov 15 is after cutoff → NOT anonymized in BOTH modes
+        expect(isBookingAnonymized('2024-11-10', 5, resWeek, today)).toBe(false);
+        expect(isBookingAnonymized('2024-11-10', 5, resDay, today)).toBe(false);
     });
 });
 

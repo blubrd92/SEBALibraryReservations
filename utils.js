@@ -306,12 +306,11 @@ function getLastWeekdayOfMonth(year, month, weekday) {
 
 /**
  * Determine if a booking should be locked (read-only).
- * Day view: lock bookings before today.
- * Week view: lock bookings before the current week's Sunday.
+ * Locks any booking on a date before today, regardless of view mode.
  *
  * @param {string} weekKey  - Week key string "YYYY-M-D"
  * @param {number} dayIndex - Day index 0-6
- * @param {object} res      - Resource object (needs viewMode)
+ * @param {object} res      - Resource object (accepted for API compatibility)
  * @param {Date}   [today]  - Override "today" for testing (defaults to new Date())
  * @returns {boolean}
  */

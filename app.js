@@ -1378,12 +1378,17 @@ const firebaseConfig = {
             return { valid: false, reason: `Closed: ${closureReason}` };
         }
 
+        // Check if target date is locked (past date)
+        if (isBookingLocked(targetWeekKey, targetDay, res)) {
+            return { valid: false, reason: "Cannot move booking to a past date." };
+        }
+
         // Check advance booking limit
         const advCheck = checkAdvanceLimit(res, targetWeekKey, targetDay);
         if (!advCheck.allowed) {
             return { valid: false, reason: advCheck.message };
         }
-        
+
         // Get operating hours for target day
         const dayStart = res.hours[targetDay * 2];
         const dayEnd = res.hours[(targetDay * 2) + 1];
@@ -1447,6 +1452,9 @@ const firebaseConfig = {
         const targetSub = targetParts[3] || '';
 
         if (targetSlotId === rescheduleMode.sourceId) return { valid: false };
+
+        // Check if target date is locked (past date)
+        if (isBookingLocked(targetWeekKey, targetDay, res)) return { valid: false };
 
         // Closure check
         const targetDate = new Date(targetWeekKey + 'T00:00:00');
@@ -2189,6 +2197,8 @@ const firebaseConfig = {
         try {
             const updatedData = { ...bookingData, duration: newDuration };
             await db.collection('appointments').doc(bookingId).set(updatedData);
+            delete statsBookingsCache[`${currentResId}_${new Date().getFullYear()}`];
+            delete statsBookingsCache[`${currentResId}_${new Date().getFullYear()}_${new Date().getMonth()}`];
             showToast(`Duration updated to ${newDuration} hour${newDuration === 1 ? '' : 's'}`, 'success');
         } catch (error) {
             console.error("Resize error:", error);
@@ -2234,7 +2244,9 @@ const firebaseConfig = {
             
             // Update stats metadata for the new location
             updateStatsYearMeta(currentResId, targetId);
-            
+            delete statsBookingsCache[`${currentResId}_${new Date().getFullYear()}`];
+            delete statsBookingsCache[`${currentResId}_${new Date().getFullYear()}_${new Date().getMonth()}`];
+
             showToast("Booking moved successfully!", "success");
         } catch (error) {
             console.error("Move error:", error);
@@ -2368,6 +2380,12 @@ const firebaseConfig = {
             return true;
         }
 
+        // Check if target date is locked (past date)
+        if (isBookingLocked(targetWeekKey, targetDayIdx, res)) {
+            showToast("Cannot reschedule to a past date.", "error");
+            return true;
+        }
+
         // Check advance booking limit
         const advCheck = checkAdvanceLimit(res, targetWeekKey, targetDayIdx);
         if (!advCheck.allowed) {
@@ -2477,6 +2495,8 @@ const firebaseConfig = {
             await batch.commit();
 
             updateStatsYearMeta(currentResId, targetId);
+            delete statsBookingsCache[`${currentResId}_${new Date().getFullYear()}`];
+            delete statsBookingsCache[`${currentResId}_${new Date().getFullYear()}_${new Date().getMonth()}`];
 
             const durationMsg = newDuration !== rescheduleMode.sourceData.duration ? ` (duration adjusted to ${newDuration}h)` : '';
             showToast(`Booking rescheduled successfully!${durationMsg}`, "success");
@@ -2915,12 +2935,18 @@ const firebaseConfig = {
             const dayIdx = date.getDay();
             const dateStr = date.toLocaleDateString('en-US', { weekday: 'short', month: 'short', day: 'numeric', year: 'numeric' });
             
+            // Check if date is in the past
+            if (isBookingLocked(weekKey, dayIdx, res)) {
+                skipped.push(dateStr + ' (past date)');
+                continue;
+            }
+
             // Check closure
             if (getClosureReason(res, date)) {
                 skipped.push(dateStr + ' (closed)');
                 continue;
             }
-            
+
             // Check if day is open
             const dayStart = res.hours[dayIdx * 2];
             const dayEnd = res.hours[dayIdx * 2 + 1];
@@ -2990,7 +3016,11 @@ const firebaseConfig = {
             });
             await batch.commit();
             
-            if (toCreate.length > 0) updateStatsYearMeta(res.id, toCreate[0].slotId);
+            if (toCreate.length > 0) {
+                updateStatsYearMeta(res.id, toCreate[0].slotId);
+                delete statsBookingsCache[`${res.id}_${new Date().getFullYear()}`];
+                delete statsBookingsCache[`${res.id}_${new Date().getFullYear()}_${new Date().getMonth()}`];
+            }
             closeModal('bookingModal');
             showToast(`${toCreate.length} recurring booking(s) created.`, 'success');
         } catch (e) {
@@ -4571,6 +4601,8 @@ const firebaseConfig = {
                 showLoading(true); 
                 try {
                     await db.collection('appointments').doc(slotId).delete();
+                    delete statsBookingsCache[`${currentResId}_${new Date().getFullYear()}`];
+                    delete statsBookingsCache[`${currentResId}_${new Date().getFullYear()}_${new Date().getMonth()}`];
                     closeModal('bookingModal');
                 } catch(e) {
                     showToast("Error deleting: " + e.message, "error");
