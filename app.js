@@ -2755,6 +2755,7 @@ const firebaseConfig = {
             await db.collection('appointments').doc(slotId).set(data);
             updateStatsYearMeta(res.id, slotId); // Update stats metadata
             delete statsBookingsCache[`${res.id}_${new Date().getFullYear()}`];
+            delete statsBookingsCache[`${res.id}_${new Date().getFullYear()}_${new Date().getMonth()}`];
             closeModal('bookingModal'); 
         } 
         catch(e) { showToast("Error: " + e.message, "error"); }
@@ -4434,15 +4435,12 @@ const firebaseConfig = {
             // Update the checkpoint so we don't re-read these weeks next month
             if (res.lastScrubbedWeekKey !== cutoffWeekKey) {
                 const systemRef = db.collection('system').doc('resources');
-                const systemDoc = await systemRef.get();
-                if (systemDoc.exists) {
-                    const list = systemDoc.data().list;
-                    const rIndex = list.findIndex(r => r.id === res.id);
-                    if (rIndex !== -1) {
-                        list[rIndex].lastScrubbedWeekKey = cutoffWeekKey;
-                        await systemRef.update({ list });
-                        res.lastScrubbedWeekKey = cutoffWeekKey;
-                    }
+                const list = resources.map(r => ({ ...r }));
+                const rIndex = list.findIndex(r => r.id === res.id);
+                if (rIndex !== -1) {
+                    list[rIndex].lastScrubbedWeekKey = cutoffWeekKey;
+                    await systemRef.update({ list });
+                    res.lastScrubbedWeekKey = cutoffWeekKey;
                 }
             }
         } catch (err) {
@@ -4590,6 +4588,7 @@ const firebaseConfig = {
             try {
                 await db.collection('appointments').doc(pendingSeriesDeleteSlotId).delete();
                 delete statsBookingsCache[`${currentResId}_${new Date().getFullYear()}`];
+                delete statsBookingsCache[`${currentResId}_${new Date().getFullYear()}_${new Date().getMonth()}`];
                 closeModal('bookingModal');
                 showToast('Booking deleted.', 'success');
             } catch (e) {
@@ -4607,6 +4606,7 @@ const firebaseConfig = {
                 snapshot.forEach(doc => batch.delete(doc.ref));
                 await batch.commit();
                 delete statsBookingsCache[`${currentResId}_${new Date().getFullYear()}`];
+                delete statsBookingsCache[`${currentResId}_${new Date().getFullYear()}_${new Date().getMonth()}`];
                 closeModal('bookingModal');
                 showToast(snapshot.size + ' booking(s) in series deleted.', 'success');
             } catch (e) {
@@ -4767,11 +4767,16 @@ const firebaseConfig = {
             
             if (isNaN(year)) return;
             
-            // Get current metadata
+            // Use in-memory cache if available, otherwise read from Firestore
             const metaRef = db.collection('system').doc('stats_meta');
-            const metaDoc = await metaRef.get();
-            
-            let meta = metaDoc.exists ? metaDoc.data() : {};
+            let meta;
+            if (statsMetaCache) {
+                meta = statsMetaCache;
+            } else {
+                const metaDoc = await metaRef.get();
+                meta = metaDoc.exists ? metaDoc.data() : {};
+                statsMetaCache = meta;
+            }
             
             // Add year if not already present for this resource
             if (!meta[resId]) {
@@ -4873,6 +4878,32 @@ const firebaseConfig = {
         loadStatsData();
     }
     
+    async function fetchBookingsForMonth(resId, year, month) {
+        // Query week keys that could contain bookings for this month.
+        // Week boundaries may span months, so we query slightly wider and filter.
+        const monthStart = new Date(year, month, 1);
+        const lowerWeekKey = getWeekKey(monthStart);
+        const upperWeekKey = getWeekKey(new Date(year, month + 1, 7));
+        const snapshot = await db.collection('appointments')
+            .where(firebase.firestore.FieldPath.documentId(), '>=', `${resId}_${lowerWeekKey}`)
+            .where(firebase.firestore.FieldPath.documentId(), '<', `${resId}_${upperWeekKey}`)
+            .get();
+        const bookings = {};
+        const prefix = resId + '_';
+        snapshot.forEach(doc => {
+            const suffix = doc.id.substring(prefix.length);
+            const parts = suffix.split('_');
+            const [wy, wm, wd] = parts[0].split('-').map(Number);
+            const dayIndex = parseInt(parts[1]);
+            const bookingDate = new Date(wy, wm - 1, wd);
+            bookingDate.setDate(bookingDate.getDate() + dayIndex);
+            if (bookingDate.getMonth() === month && bookingDate.getFullYear() === year) {
+                bookings[doc.id] = doc.data();
+            }
+        });
+        return bookings;
+    }
+
     async function fetchBookingsForYear(resId, year) {
         // Single range query instead of ~53 per-week queries.
         // Slightly wider range catches boundary weeks that span year edges.
@@ -4941,6 +4972,10 @@ const firebaseConfig = {
         return `stats_cache_${resId}_${year}`;
     }
 
+    function getMonthCacheDocId(resId, year, month) {
+        return `stats_cache_${resId}_${year}_${month}`;
+    }
+
     // Strip bookings down to only the fields needed for stats (duration, hasStaff)
     // to keep the cache document small
     function slimBookingsForCache(bookings) {
@@ -4992,27 +5027,95 @@ const firebaseConfig = {
 
             // If no cache hit, fetch from individual appointment documents
             if (!bookings) {
-                bookings = await fetchBookingsForYear(resId, year);
+                const isCurrentYear = (year === currentYear);
 
-                // If we found bookings for this year, ensure stats_meta is updated
-                if (Object.keys(bookings).length > 0) {
-                    updateStatsYearMeta(resId, Object.keys(bookings)[0]);
+                if (isCurrentYear) {
+                    // Monthly caching: past months are frozen, only current month is live
+                    const currentMonth = new Date().getMonth();
+                    let allBookings = {};
+                    const monthPromises = [];
+
+                    for (let m = 0; m <= currentMonth; m++) {
+                        monthPromises.push((async (month) => {
+                            const isCurrentMonth = (month === currentMonth);
+                            const memoryCacheKeyMonth = `${resId}_${year}_${month}`;
+
+                            // Past months: check caches first
+                            if (!isCurrentMonth) {
+                                // In-memory cache
+                                if (statsBookingsCache[memoryCacheKeyMonth]) {
+                                    const c = statsBookingsCache[memoryCacheKeyMonth];
+                                    if (Date.now() - c.fetchedAt < STATS_CACHE_TTL) {
+                                        return c.bookings;
+                                    }
+                                }
+
+                                // Firestore monthly cache doc
+                                const cacheId = getMonthCacheDocId(resId, year, month);
+                                try {
+                                    const cacheDoc = await db.collection('system').doc(cacheId).get();
+                                    if (cacheDoc.exists) {
+                                        const cached = cacheDoc.data().bookings || {};
+                                        statsBookingsCache[memoryCacheKeyMonth] = { bookings: cached, fetchedAt: Date.now() };
+                                        return cached;
+                                    }
+                                } catch (e) {
+                                    console.error('Monthly cache read error:', e);
+                                }
+                            }
+
+                            // Live query for this month
+                            const monthBookings = await fetchBookingsForMonth(resId, year, month);
+
+                            // Cache past months in Firestore
+                            if (!isCurrentMonth) {
+                                const slim = slimBookingsForCache(monthBookings);
+                                const cacheId = getMonthCacheDocId(resId, year, month);
+                                db.collection('system').doc(cacheId).set({
+                                    bookings: slim,
+                                    resourceId: resId,
+                                    year: year,
+                                    month: month,
+                                    cachedAt: firebase.firestore.FieldValue.serverTimestamp()
+                                }).catch(err => console.error('Failed to cache monthly stats:', err));
+                                statsBookingsCache[memoryCacheKeyMonth] = { bookings: slim, fetchedAt: Date.now() };
+                                return slim;
+                            }
+
+                            return monthBookings;
+                        })(m));
+                    }
+
+                    const monthResults = await Promise.all(monthPromises);
+                    monthResults.forEach(mb => Object.assign(allBookings, mb));
+                    bookings = allBookings;
+
+                    if (Object.keys(bookings).length > 0) {
+                        updateStatsYearMeta(resId, Object.keys(bookings)[0]);
+                    }
+                } else {
+                    // Past year or future year: fetch entire year
+                    bookings = await fetchBookingsForYear(resId, year);
+
+                    if (Object.keys(bookings).length > 0) {
+                        updateStatsYearMeta(resId, Object.keys(bookings)[0]);
+                    }
+
+                    // Cache past year data in Firestore for future sessions
+                    if (isPastYear) {
+                        const cacheDocId = getStatsCacheDocId(resId, year);
+                        const slim = slimBookingsForCache(bookings);
+                        db.collection('system').doc(cacheDocId).set({
+                            bookings: slim,
+                            resourceId: resId,
+                            year: year,
+                            cachedAt: firebase.firestore.FieldValue.serverTimestamp()
+                        }).catch(err => console.error('Failed to cache stats:', err));
+                    }
                 }
 
-                // Store in session memory cache
+                // Store merged result in session cache
                 statsBookingsCache[memoryCacheKey] = { bookings, fetchedAt: Date.now() };
-
-                // Cache past year data in Firestore for future sessions
-                if (isPastYear) {
-                    const cacheDocId = getStatsCacheDocId(resId, year);
-                    const slim = slimBookingsForCache(bookings);
-                    db.collection('system').doc(cacheDocId).set({
-                        bookings: slim,
-                        resourceId: resId,
-                        year: year,
-                        cachedAt: firebase.firestore.FieldValue.serverTimestamp()
-                    }).catch(err => console.error('Failed to cache stats:', err));
-                }
             }
 
             const dailyStats = buildDailyStats(resId, year, res, bookings);
