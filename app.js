@@ -5042,12 +5042,9 @@ const firebaseConfig = {
 
                             // Past months: check caches first
                             if (!isCurrentMonth) {
-                                // In-memory cache
+                                // In-memory cache (no TTL — past months are frozen)
                                 if (statsBookingsCache[memoryCacheKeyMonth]) {
-                                    const c = statsBookingsCache[memoryCacheKeyMonth];
-                                    if (Date.now() - c.fetchedAt < STATS_CACHE_TTL) {
-                                        return c.bookings;
-                                    }
+                                    return statsBookingsCache[memoryCacheKeyMonth].bookings;
                                 }
 
                                 // Firestore monthly cache doc
