@@ -94,7 +94,10 @@
             </div>
             <div id="staffInputContainer" class="hidden" style="margin-top: 10px;">
                 <label style="font-size:0.8em; color:#666;">Assigned Staff/Volunteer <span class="required-asterisk">*</span></label>
-                <input type="text" id="bookStaffName" placeholder="e.g. John" onkeydown="handleBookingEnter(event)">
+                <select id="bookStaffName" onkeydown="handleBookingEnter(event)">
+                    <option value="">-- Select --</option>
+                </select>
+                <div id="staffNameEmptyHint" class="hidden" style="margin-top:6px; font-size:0.8em; color:#c62828;">No staff names configured. Add them in Admin Settings.</div>
             </div>
         </div>
         
@@ -336,16 +339,15 @@
         <div class="settings-header">
             <span>Admin Configuration</span>
         </div>
-        <div class="settings-body">
-            
-            <div class="resource-manager">
-                <label style="font-weight:bold; display:block; margin-bottom:5px;">Manage Resources:</label>
-                <div class="flex gap">
-                    <select id="settingResSelect" onchange="loadSettingsForEditor()" style="flex-grow:1;"></select>
-                    <button class="btn-success" onclick="addNewResource()">+ New Resource</button>
-                    <button class="btn-danger" onclick="deleteResource()">Delete</button>
-                </div>
+        <div class="resource-manager">
+            <label style="font-weight:bold; display:block; margin-bottom:5px;">Manage Resources:</label>
+            <div class="flex gap">
+                <select id="settingResSelect" onchange="loadSettingsForEditor()" style="flex-grow:1;"></select>
+                <button class="btn-success" onclick="addNewResource()">+ New Resource</button>
+                <button class="btn-danger" onclick="deleteResource()">Delete</button>
             </div>
+        </div>
+        <div class="settings-body">
 
             <!-- SECTION: General Settings -->
             <div class="settings-section">
@@ -391,9 +393,23 @@
                         <input type="checkbox" id="editUseQuarterHour" style="width:auto;">
                         <label for="editUseQuarterHour">Enable 15-Minute Scheduling</label>
                     </div>
-                    <div class="settings-option">
-                        <input type="checkbox" id="editResOrientation" style="width:auto;">
-                        <label for="editResOrientation">Enable "Staff Assistance" Fields</label>
+                    <div class="settings-option" style="flex-direction:column; align-items:flex-start;">
+                        <div style="display:flex; align-items:center; gap:8px;">
+                            <input type="checkbox" id="editResOrientation" onchange="toggleStaffNamesConfig()" style="width:auto;">
+                            <label for="editResOrientation">Enable "Staff Assistance" Fields</label>
+                        </div>
+                        <div id="staffNamesConfig" class="hidden" style="width:100%; margin-top:10px; padding-top:10px; border-top:1px solid #eee;">
+                            <label style="font-weight:bold; display:block; margin-bottom:8px;">Staff/Volunteer Names</label>
+                            <div class="closure-add-row">
+                                <input type="text" id="newStaffName" placeholder="Enter name" style="flex:1; min-width:150px;" onkeydown="if(event.key==='Enter'){event.preventDefault();addStaffName();}">
+                                <button class="btn-success" id="staffNameAddBtn" onclick="addStaffName()">Add</button>
+                                <a href="#" id="staffNameCancelEditLink" onclick="cancelStaffNameEdit();return false;" style="display:none;align-self:center;font-size:0.85em;color:#c62828;">Cancel</a>
+                            </div>
+                            <div id="staffNameList" class="closure-list" style="max-height:150px;"></div>
+                            <div class="closure-actions">
+                                <button onclick="openApplyStaffNamesModal()" style="font-size:0.85em;">Apply Names to Other Resources...</button>
+                            </div>
+                        </div>
                     </div>
                     <div class="settings-option">
                         <input type="checkbox" id="editDefaultShowNotes" style="width:auto;">
@@ -433,6 +449,16 @@
                     <div class="settings-option">
                         <input type="checkbox" id="editAdminOnly" style="width:auto;">
                         <label for="editAdminOnly">&#128274; Admin Only (restrict editing to admin account)</label>
+                    </div>
+                    <div class="settings-option" style="flex-direction:column; align-items:flex-start;">
+                        <label style="margin-bottom:8px;">Patron Anonymity Buffer</label>
+                        <select id="editAnonymityBuffer" style="width:100%;">
+                            <option value="0">0 Months (Applies immediately after current day)</option>
+                            <option value="1">1 Month</option>
+                            <option value="2">2 Months</option>
+                            <option value="3">3 Months</option>
+                        </select>
+                        <small style="color:#666; display:block; margin-top:6px;"> The system <strong>automatically anonymizes</strong> patron info from past bookings after the selected time period to protect privacy. A <strong>max of 3 months</strong> can be retained.</small>
                     </div>
                     <div class="settings-option" style="flex-direction:column; align-items:flex-start;">
                         <div style="display:flex; align-items:center; gap:8px;">
@@ -487,11 +513,16 @@
                     <div style="border-top: 1px solid #eee; margin-top: 15px; padding-top: 15px;">
                         <label style="font-weight:bold; display:block; margin-bottom:10px;">Closure Dates (Holidays/Closures)</label>
                         <div class="closure-add-row">
-                            <input type="date" id="newClosureDate" title="Start Date">
-                            <span style="align-self: center; color: #666;">to</span>
-                            <input type="date" id="newClosureEndDate" title="End Date (optional, leave blank for single day)">
+                            <input type="date" id="newClosureDate" title="Date">
+                            <span id="closureEndDateSection" style="display:none; align-self:center;">
+                                <span style="color:#666; margin:0 2px;">to</span>
+                                <input type="date" id="newClosureEndDate" title="End Date">
+                                <button type="button" onclick="toggleClosureEndDate(false)" style="background:none;border:none;color:#999;cursor:pointer;font-size:1.1em;padding:0 4px;" title="Remove end date">&times;</button>
+                            </span>
+                            <button type="button" id="closureAddEndDateLink" onclick="toggleClosureEndDate(true)" style="align-self:center;font-size:0.8em;padding:4px 8px;white-space:nowrap;">+ End date</button>
                             <input type="text" id="newClosureReason" placeholder="Reason (e.g. Holiday)">
-                            <button class="btn-success" onclick="addClosureDate()">Add</button>
+                            <button class="btn-success" id="closureAddBtn" onclick="addClosureDate()">Add</button>
+                            <a href="#" id="closureCancelEditLink" onclick="cancelClosureEdit();return false;" style="display:none;align-self:center;font-size:0.85em;color:#c62828;">Cancel</a>
                         </div>
                         <div style="margin: 10px 0; display: flex; align-items: center; gap: 8px;">
                             <label style="font-size: 0.9em; font-weight: bold;">Viewing year:</label>
@@ -624,13 +655,36 @@
     </div>
 </div>
 <div id="applyClosuresModal" class="modal">
-    <div class="modal-content" style="max-width: 420px;">
+    <div class="modal-content" style="max-width: 480px;">
         <div class="modal-header">Apply Closures to Resources</div>
         <p id="applyClosuresDesc" style="margin: 10px 0; font-size: 0.9em; color: #555;"></p>
-        <div id="applyClosuresCheckboxes" style="margin: 12px 0; max-height: 300px; overflow-y: auto;"></div>
+        <div style="display:flex; justify-content:space-between; align-items:center; margin-bottom:4px;">
+            <span style="font-weight:600; font-size:0.85em;">Select closures to apply:</span>
+            <a href="#" onclick="document.querySelectorAll('input[name=applyClosureDate]').forEach(c=>c.checked=!c.checked);return false;" style="font-size:0.8em;">Toggle all</a>
+        </div>
+        <div id="applyClosuresDateCheckboxes" style="margin: 0 0 12px; max-height: 180px; overflow-y: auto; border:1px solid #e8e8e8; border-radius:4px; padding:4px 0;"></div>
+        <div style="font-weight:600; font-size:0.85em; margin-bottom:4px;">Apply to:</div>
+        <div id="applyClosuresCheckboxes" style="margin: 0 0 12px; max-height: 180px; overflow-y: auto; border:1px solid #e8e8e8; border-radius:4px; padding:4px 0;"></div>
         <div style="display: flex; gap: 8px; justify-content: flex-end; margin-top: 15px;">
             <button onclick="closeModal('applyClosuresModal')">Cancel</button>
             <button class="btn-success" onclick="confirmApplyClosures()">Apply</button>
+        </div>
+    </div>
+</div>
+<div id="applyStaffNamesModal" class="modal">
+    <div class="modal-content" style="max-width: 480px;">
+        <div class="modal-header">Apply Staff Names to Resources</div>
+        <p id="applyStaffNamesDesc" style="margin: 10px 0; font-size: 0.9em; color: #555;"></p>
+        <div style="display:flex; justify-content:space-between; align-items:center; margin-bottom:4px;">
+            <span style="font-weight:600; font-size:0.85em;">Select names to apply:</span>
+            <a href="#" onclick="document.querySelectorAll('input[name=applyStaffName]').forEach(c=>c.checked=!c.checked);return false;" style="font-size:0.8em;">Toggle all</a>
+        </div>
+        <div id="applyStaffNameCheckboxes" style="margin: 0 0 12px; max-height: 180px; overflow-y: auto; border:1px solid #e8e8e8; border-radius:4px; padding:4px 0;"></div>
+        <div style="font-weight:600; font-size:0.85em; margin-bottom:4px;">Apply to:</div>
+        <div id="applyStaffNameTargetCheckboxes" style="margin: 0 0 12px; max-height: 180px; overflow-y: auto; border:1px solid #e8e8e8; border-radius:4px; padding:4px 0;"></div>
+        <div style="display: flex; gap: 8px; justify-content: flex-end; margin-top: 15px;">
+            <button onclick="closeModal('applyStaffNamesModal')">Cancel</button>
+            <button class="btn-success" onclick="confirmApplyStaffNames()">Apply</button>
         </div>
     </div>
 </div>

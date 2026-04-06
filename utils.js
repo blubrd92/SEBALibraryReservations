@@ -305,9 +305,9 @@ function getLastWeekdayOfMonth(year, month, weekday) {
 // ============================================================
 
 /**
- * Determine if a booking should be anonymized (past data privacy).
- * Day view: anonymize bookings before today.
- * Week view: anonymize bookings before the current week's Sunday.
+ * Determine if a booking should be locked (read-only).
+ * Day view: lock bookings before today.
+ * Week view: lock bookings before the current week's Sunday.
  *
  * @param {string} weekKey  - Week key string "YYYY-M-D"
  * @param {number} dayIndex - Day index 0-6
@@ -315,7 +315,7 @@ function getLastWeekdayOfMonth(year, month, weekday) {
  * @param {Date}   [today]  - Override "today" for testing (defaults to new Date())
  * @returns {boolean}
  */
-function isBookingAnonymized(weekKey, dayIndex, res, today) {
+function isBookingLocked(weekKey, dayIndex, res, today) {
     const [y, m, d] = weekKey.split('-').map(Number);
     const bookingDate = new Date(y, m - 1, d);
     bookingDate.setDate(bookingDate.getDate() + dayIndex);
@@ -333,6 +333,35 @@ function isBookingAnonymized(weekKey, dayIndex, res, today) {
         thisWeekStart.setDate(today.getDate() - day);
         return bookingDate < thisWeekStart;
     }
+}
+
+/**
+ * Determine if a booking should be anonymized (past data privacy).
+ * Checks the anonymityBufferMonths setting.
+ *
+ * @param {string} weekKey  - Week key string "YYYY-M-D"
+ * @param {number} dayIndex - Day index 0-6
+ * @param {object} res      - Resource object (needs viewMode and anonymityBufferMonths)
+ * @param {Date}   [today]  - Override "today" for testing (defaults to new Date())
+ * @returns {boolean}
+ */
+function isBookingAnonymized(weekKey, dayIndex, res, today) {
+    const buffer = parseInt(res.anonymityBufferMonths || 0, 10);
+    if (buffer === 0) {
+        return isBookingLocked(weekKey, dayIndex, res, today);
+    }
+
+    const [y, m, d] = weekKey.split('-').map(Number);
+    const bookingDate = new Date(y, m - 1, d);
+    bookingDate.setDate(bookingDate.getDate() + dayIndex);
+    bookingDate.setHours(0, 0, 0, 0);
+
+    if (!today) today = new Date();
+    today = new Date(today);
+    today.setHours(0, 0, 0, 0);
+
+    const cutoffDate = new Date(today.getFullYear(), today.getMonth() - buffer, 1);
+    return bookingDate < cutoffDate;
 }
 
 // ============================================================
@@ -418,6 +447,25 @@ function formatCosmeticTime(timeVal, dayEnd, cosmeticCloseMinutes) {
 }
 
 // ============================================================
+// STAFF NAME NORMALIZATION
+// ============================================================
+
+/**
+ * Normalize a staff name for consistent stats grouping.
+ * Trims whitespace, collapses internal runs of whitespace,
+ * and title-cases each word.
+ *
+ * @param {string} name - Raw staff name input
+ * @returns {string} Normalized name, or "Unknown" if empty/falsy
+ */
+function normalizeStaffName(name) {
+    if (!name || typeof name !== 'string') return 'Unknown';
+    const trimmed = name.trim().replace(/\s+/g, ' ');
+    if (trimmed === '') return 'Unknown';
+    return trimmed.replace(/\S+/g, w => w.charAt(0).toUpperCase() + w.slice(1).toLowerCase());
+}
+
+// ============================================================
 // MODULE EXPORT (Node.js / Jest) — no-op in the browser
 // ============================================================
 
@@ -441,9 +489,11 @@ if (typeof module !== 'undefined' && module.exports) {
         getSubRoomName,
         getNthWeekdayOfMonth,
         getLastWeekdayOfMonth,
+        isBookingLocked,
         isBookingAnonymized,
         checkTimeConflict,
         formatCosmeticTime,
-        getCurrentTimeFloat
+        getCurrentTimeFloat,
+        normalizeStaffName
     };
 }

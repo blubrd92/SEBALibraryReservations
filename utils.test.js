@@ -20,7 +20,8 @@ const {
     isBookingAnonymized,
     checkTimeConflict,
     formatCosmeticTime,
-    getCurrentTimeFloat
+    getCurrentTimeFloat,
+    normalizeStaffName
 } = require('./utils');
 
 // ============================================================
@@ -645,5 +646,51 @@ describe('getCurrentTimeFloat', () => {
         expect(typeof result).toBe('number');
         expect(result).toBeGreaterThanOrEqual(0);
         expect(result).toBeLessThan(24);
+    });
+});
+
+// ============================================================
+// normalizeStaffName
+// ============================================================
+
+describe('normalizeStaffName', () => {
+    test('title-cases a lowercase name', () => {
+        expect(normalizeStaffName('john smith')).toBe('John Smith');
+    });
+
+    test('title-cases an uppercase name', () => {
+        expect(normalizeStaffName('JOHN SMITH')).toBe('John Smith');
+    });
+
+    test('title-cases mixed case', () => {
+        expect(normalizeStaffName('jOHN sMITH')).toBe('John Smith');
+    });
+
+    test('trims leading and trailing whitespace', () => {
+        expect(normalizeStaffName('  John  ')).toBe('John');
+    });
+
+    test('collapses internal whitespace', () => {
+        expect(normalizeStaffName('John   Smith')).toBe('John Smith');
+    });
+
+    test('returns Unknown for empty string', () => {
+        expect(normalizeStaffName('')).toBe('Unknown');
+    });
+
+    test('returns Unknown for whitespace-only string', () => {
+        expect(normalizeStaffName('   ')).toBe('Unknown');
+    });
+
+    test('returns Unknown for null', () => {
+        expect(normalizeStaffName(null)).toBe('Unknown');
+    });
+
+    test('returns Unknown for undefined', () => {
+        expect(normalizeStaffName(undefined)).toBe('Unknown');
+    });
+
+    test('handles single word', () => {
+        expect(normalizeStaffName('alice')).toBe('Alice');
     });
 });

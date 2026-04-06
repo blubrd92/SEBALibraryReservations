@@ -39,7 +39,7 @@ button:not(.btn-primary):not(.btn-success):not(.btn-danger):hover { background: 
 .btn-danger { background: white; color: var(--danger); border: 1px solid var(--danger); transition: transform 0.15s, box-shadow 0.15s, filter 0.15s; }
 .btn-danger:hover { filter: brightness(0.95); transform: translateY(-1px); box-shadow: 0 3px 8px rgba(0,0,0,0.15); }
 .btn-nav { font-weight: bold; width: 40px; text-align: center; }
-select, input[type="date"], input[type="text"], input[type="number"], input[type="password"] { padding: 8px; border-radius: 4px; border: 1px solid #ccc; font-size: 1rem; }
+select, input[type="date"], input[type="text"], input[type="number"], input[type="password"] { padding: 8px; border-radius: 4px; border: 1px solid #ccc; font-size: 1rem; box-sizing: border-box; }
 
 /* === UPDATED: LAYOUT WRAPPER === */
 .layout-wrapper {
@@ -459,6 +459,7 @@ body.is-dragging .slot::after {
 .form-group { margin-bottom: 15px; }
 .form-group label { display: block; margin-bottom: 5px; font-weight: bold; font-size: 0.9em; color: #555; }
 .form-group input, .form-group textarea, .form-group select { width: 100%; box-sizing: border-box; }
+textarea { resize: vertical; }
 
 #editSidebarText::placeholder {
     color: #999;
@@ -482,7 +483,7 @@ body.is-dragging .slot::after {
 .settings-header { background: var(--primary); color: white; padding: 15px 25px; border-radius: 8px 8px 0 0; display: flex; justify-content: space-between; align-items: center; flex-shrink: 0; font-size: 1.2rem; font-weight: bold; }
 .settings-body { padding: 25px; overflow-y: auto; flex: 1; min-height: 0; }
 .settings-footer { padding: 15px 25px; border-top: 1px solid #eee; display: flex; justify-content: space-between; flex-shrink: 0; background: white; border-radius: 0 0 8px 8px; }
-.resource-manager { background: #eef2f7; padding: 15px; border-radius: 6px; border: 1px solid #d1d9e6; margin-bottom: 20px; }
+.resource-manager { background: #eef2f7; padding: 15px 25px; border-bottom: 1px solid #d1d9e6; flex-shrink: 0; }
 .day-config-grid { display: grid; grid-template-columns: repeat(7, minmax(0, 1fr)); gap: 4px; margin-top: 10px; }
 .day-box { text-align: center; font-size: 0.8em; border: 1px solid #ccc; padding: 4px 2px; border-radius: 4px; background: #fff; min-width: 0; }
 .day-box input[type="number"] { text-align: center; margin-bottom: 2px; border: 1px solid #eee; width: 100%; box-sizing: border-box; min-width: 0; }
@@ -733,9 +734,17 @@ body.is-dragging .slot::after {
     font-size: 0.85em;
     color: #666;
 }
+.closure-item-actions {
+    display: flex;
+    gap: 4px;
+    flex-shrink: 0;
+}
 .closure-item button {
     padding: 4px 8px;
     font-size: 0.8em;
+}
+.closure-item-past {
+    opacity: 0.6;
 }
 .closure-empty {
     padding: 15px;
@@ -970,26 +979,86 @@ body.is-dragging .slot::after {
 /* Pie Chart */
 .dash-pie-container {
     display: flex;
+    flex-direction: column;
     align-items: center;
-    gap: 16px;
+    gap: 12px;
 }
 .dash-pie {
-    width: 120px;
-    height: 120px;
+    width: 140px;
+    height: 140px;
     border-radius: 50%;
     flex-shrink: 0;
 }
 .dash-pie-legend {
     display: flex;
-    flex-direction: column;
-    gap: 4px;
+    flex-wrap: wrap;
+    gap: 4px 12px;
+    justify-content: center;
 }
 .dash-pie-legend-item {
-    font-size: 0.78em;
-    color: #555;
+    font-size: 0.75em;
+    color: #666;
     display: flex;
     align-items: center;
-    gap: 5px;
+    gap: 4px;
+}
+
+/* Highlight for top performer in stats boxes */
+.dash-highlight {
+    color: #111 !important;
+    font-weight: 700 !important;
+}
+
+/* Stacked bar chart (staff assistance) */
+.dash-stacked-chart {
+    display: flex;
+    align-items: flex-end;
+    gap: 4px;
+    height: 180px;
+    padding-top: 10px;
+}
+.dash-stacked-col {
+    flex: 1;
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    height: 100%;
+    justify-content: flex-end;
+}
+.dash-stacked-count {
+    font-size: 0.7em;
+    color: #555;
+    margin-bottom: 2px;
+    font-weight: 600;
+}
+.dash-stacked-bar {
+    width: 70%;
+    display: flex;
+    flex-direction: column;
+    border-radius: 3px 3px 0 0;
+    overflow: hidden;
+    min-height: 0;
+    transition: height 0.3s ease;
+}
+.dash-stacked-segment {
+    width: 100%;
+    min-height: 1px;
+}
+.dash-stacked-segment-top {
+    border-radius: 3px 3px 0 0;
+}
+.dash-stacked-label {
+    font-size: 0.75em;
+    color: #666;
+    margin-top: 4px;
+    font-weight: 600;
+}
+.dash-stacked-legend {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 4px 12px;
+    justify-content: center;
+    margin-top: 12px;
 }
 
 /* Vertical bar chart (monthly) */
@@ -1156,7 +1225,6 @@ body.is-dragging .slot::after {
 
 @media (max-width: 800px) {
     .dash-row, .dash-row.dash-row-thirds { grid-template-columns: 1fr; }
-    .dash-pie-container { flex-direction: column; align-items: center; }
 }
 
 /* Print Styles */

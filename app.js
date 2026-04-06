@@ -54,6 +54,9 @@ const firebaseConfig = {
     let bookingColorMap = {};
     let activeListenerUnsub = null;
     let timeIndicatorIntervalId = null;
+    let statsBookingsCache = {};  // key: `${resId}_${year}`, value: { bookings, fetchedAt }
+    let statsMetaCache = null;    // cached stats_meta document data
+    const STATS_CACHE_TTL = 5 * 60 * 1000; // 5 minutes
 
     // Pending new resource data (for import closures flow)
     let pendingNewResource = null;
@@ -188,6 +191,8 @@ const firebaseConfig = {
         return !res.adminOnly; // staff can edit if not admin-only
     }
 
+    let hasCheckedJanitor = false;
+
     function setupRealtimeListeners() {
         db.collection('system').doc('resources').onSnapshot((doc) => {
             if (doc.exists) {
@@ -202,6 +207,11 @@ const firebaseConfig = {
                 db.collection('system').doc('resources').set({ list: resources });
             }
             handleResourceUpdate();
+            
+            if (!hasCheckedJanitor) {
+                hasCheckedJanitor = true;
+                checkAndRunJanitor();
+            }
         }, (err) => showToast("Permissions Error: " + err.message, "error"));
     }
 
@@ -215,8 +225,12 @@ const firebaseConfig = {
         const res = resources.find(r => r.id === currentResId);
         if (!res) return;
 
-        const activeWeekKey = getWeekKey(currentWeekStart);
-        const queryPrefix = `${res.id}_${activeWeekKey}`;
+        const isDayView = res.viewMode === 'day';
+        const activeWeekKey = getWeekKey(isDayView ? currentDayDate : currentWeekStart);
+        // For day-view resources, narrow query to just the displayed day
+        const queryPrefix = isDayView
+            ? `${res.id}_${activeWeekKey}_${currentDayDate.getDay()}_`
+            : `${res.id}_${activeWeekKey}`;
 
         // If the listener is already watching this exact prefix, just re-render
         if (activeListenerUnsub && queryPrefix === activeQueryPrefix) {
@@ -717,7 +731,9 @@ const firebaseConfig = {
                 
                 // Content
                 const anon = isBookingAnonymized(activeWeekKey, booking.dayIndex, res);
+                const locked = isBookingLocked(activeWeekKey, booking.dayIndex, res);
                 booking.anonymized = anon;
+                booking.locked = locked;
                 const displayName = anon ? 'Past Booking' : escapeHtml(booking.data.name);
                 const seriesIcon = booking.data.seriesId ? '<span class="series-indicator" title="Recurring series">🔁</span> ' : '';
                 bookingEl.innerHTML = `<span class="slot-name">${seriesIcon}${displayName}</span>`;
@@ -741,8 +757,8 @@ const firebaseConfig = {
                 
                 const canEdit = canEditResource(res);
                 
-                // Add resize handle only if user can edit and booking is not anonymized
-                if (canEdit && !anon) {
+                // Add resize handle only if user can edit and booking is not locked
+                if (canEdit && !locked) {
                     const resizeHandle = document.createElement('div');
                     resizeHandle.className = 'resize-handle';
                     resizeHandle.onmousedown = (e) => startResize(e, booking, col, res, activeWeekKey, bookingEl);
@@ -779,8 +795,8 @@ const firebaseConfig = {
                     openBookingModal(booking.id, booking.data, col.subIndex);
                 };
                 
-                // DRAG-AND-DROP (only if user can edit and booking is not anonymized)
-                if (canEdit && !anon) {
+                // DRAG-AND-DROP (only if user can edit and booking is not locked)
+                if (canEdit && !locked) {
                     bookingEl.draggable = true;
                     bookingEl.ondragstart = (e) => handleDragStart(e, booking.id, booking.data);
                     bookingEl.ondragend = handleDragEnd;
@@ -1822,8 +1838,15 @@ const firebaseConfig = {
 
         const showStaff = res.hasStaffField;
         document.getElementById('staffSection').style.display = showStaff ? 'block' : 'none';
+        // Populate staff dropdown
+        const staffSelDrag = document.getElementById('bookStaffName');
+        const dragNames = (res.staffNames || []).slice().sort((a, b) => a.localeCompare(b, undefined, { sensitivity: 'base' }));
+        let dragOptions = '<option value="">-- Select --</option>';
+        dragNames.forEach(n => { dragOptions += '<option value="' + escapeHtml(n) + '">' + escapeHtml(n) + '</option>'; });
+        staffSelDrag.innerHTML = dragOptions;
+        document.getElementById('staffNameEmptyHint').classList.toggle('hidden', dragNames.length > 0);
         document.getElementById('bookHasStaff').checked = false;
-        document.getElementById('bookStaffName').value = '';
+        staffSelDrag.value = '';
         toggleStaffInput();
 
         const durSel = document.getElementById('bookDuration');
@@ -2513,6 +2536,7 @@ const firebaseConfig = {
         document.getElementById('slotId').value = slotId;
         
         const anon = data ? isBookingAnonymized(activeWeekKey, dayIdx, res) : false;
+        const locked = data ? isBookingLocked(activeWeekKey, dayIdx, res) : false;
         
         document.getElementById('bookName').value = data ? (anon ? 'Past Booking' : data.name) : '';
         document.getElementById('bookNotes').value = data ? (anon ? 'Past notes anonymized for patron privacy' : data.notes) : '';
@@ -2521,12 +2545,31 @@ const firebaseConfig = {
 
         const showStaff = res.hasStaffField;
         document.getElementById('staffSection').style.display = showStaff ? 'block' : 'none';
+        // Populate staff dropdown
+        const staffSelect = document.getElementById('bookStaffName');
+        const configuredNames = (res.staffNames || []).slice().sort((a, b) => a.localeCompare(b, undefined, { sensitivity: 'base' }));
+        let staffOptions = '<option value="">-- Select --</option>';
+        configuredNames.forEach(n => {
+            staffOptions += '<option value="' + escapeHtml(n) + '">' + escapeHtml(n) + '</option>';
+        });
+        // If editing and the existing staffName isn't in the configured list, add it
+        const existingName = data ? (data.staffName || '') : '';
+        if (existingName && !configuredNames.some(n => n.toLowerCase() === existingName.toLowerCase())) {
+            staffOptions += '<option value="' + escapeHtml(existingName) + '">' + escapeHtml(existingName) + ' (unlisted)</option>';
+        }
+        staffSelect.innerHTML = staffOptions;
+        document.getElementById('staffNameEmptyHint').classList.toggle('hidden', configuredNames.length > 0 || !!existingName);
         if(data) {
              document.getElementById('bookHasStaff').checked = data.hasStaff;
-             document.getElementById('bookStaffName').value = data.staffName || '';
+             staffSelect.value = existingName;
+             // If value didn't match (case difference), try case-insensitive match
+             if (!staffSelect.value && existingName) {
+                 const match = configuredNames.find(n => n.toLowerCase() === existingName.toLowerCase());
+                 if (match) staffSelect.value = match;
+             }
         } else {
              document.getElementById('bookHasStaff').checked = false;
-             document.getElementById('bookStaffName').value = '';
+             staffSelect.value = '';
         }
         toggleStaffInput();
 
@@ -2555,23 +2598,23 @@ const firebaseConfig = {
         
         // Check permissions and show/hide edit controls
         const canEdit = canEditResource(res);
-        document.getElementById('btnSaveBooking').style.display = (canEdit && !anon) ? '' : 'none';
-        document.getElementById('btnDeleteBooking').style.display = (canEdit && data && !anon) ? '' : 'none';
-        // Show reschedule button only for existing bookings that user can edit (not anonymized)
-        if (canEdit && data && !anon) {
+        document.getElementById('btnSaveBooking').style.display = (canEdit && !locked) ? '' : 'none';
+        document.getElementById('btnDeleteBooking').style.display = (canEdit && data && !locked) ? '' : 'none';
+        // Show reschedule button only for existing bookings that user can edit (not locked)
+        if (canEdit && data && !locked) {
             document.getElementById('btnReschedule').classList.remove('hidden');
         } else {
             document.getElementById('btnReschedule').classList.add('hidden');
         }
         document.getElementById('readOnlyNotice').style.display = canEdit ? 'none' : '';
 
-        // Disable form fields if read-only or anonymized
-        document.getElementById('bookName').disabled = !canEdit || anon;
-        document.getElementById('bookDuration').disabled = !canEdit || anon;
-        document.getElementById('bookNotes').disabled = !canEdit || anon;
-        document.getElementById('bookShowNotes').disabled = !canEdit || anon;
-        document.getElementById('bookHasStaff').disabled = !canEdit || anon;
-        document.getElementById('bookStaffName').disabled = !canEdit || anon;
+        // Disable form fields if read-only or locked
+        document.getElementById('bookName').disabled = !canEdit || locked;
+        document.getElementById('bookDuration').disabled = !canEdit || locked;
+        document.getElementById('bookNotes').disabled = !canEdit || locked;
+        document.getElementById('bookShowNotes').disabled = !canEdit || locked;
+        document.getElementById('bookHasStaff').disabled = !canEdit || locked;
+        document.getElementById('bookStaffName').disabled = !canEdit || locked;
 
         // Show series info for recurring bookings
         const seriesEl = document.getElementById('seriesInfo');
@@ -2643,6 +2686,10 @@ const firebaseConfig = {
         const subIdx = parts[3] ? parseInt(parts[3]) : null;
         const weekKey = parts[0];
 
+        if (isBookingLocked(weekKey, dayIdx, res)) {
+            return showToast("Cannot edit a past booking.", "error");
+        }
+
         // Safety net: check advance booking limit (new bookings only)
         const isNewBooking = !allBookings[slotId];
         if (isNewBooking) {
@@ -2705,8 +2752,9 @@ const firebaseConfig = {
 
         showLoading(true);
         try { 
-            await db.collection('appointments').doc(slotId).set(data); 
+            await db.collection('appointments').doc(slotId).set(data);
             updateStatsYearMeta(res.id, slotId); // Update stats metadata
+            delete statsBookingsCache[`${res.id}_${new Date().getFullYear()}`];
             closeModal('bookingModal'); 
         } 
         catch(e) { showToast("Error: " + e.message, "error"); }
@@ -2824,19 +2872,26 @@ const firebaseConfig = {
         
         showLoading(true);
         
-        // Query all needed weeks' bookings in parallel
+        // Query all needed weeks' bookings in parallel, reusing in-memory cache for current week
         const weekBookings = {};
+        const currentWk = getWeekKey(currentWeekStart);
+        // Pre-seed from the active listener's cached data to avoid re-fetching current week
+        if (weekKeysNeeded.has(currentWk)) {
+            Object.keys(allBookings).forEach(id => { weekBookings[id] = allBookings[id]; });
+        }
         try {
-            const queries = [...weekKeysNeeded].map(wk => {
-                const qPrefix = `${res.id}_${wk}`;
-                return db.collection('appointments')
-                    .where(firebase.firestore.FieldPath.documentId(), '>=', qPrefix)
-                    .where(firebase.firestore.FieldPath.documentId(), '<', qPrefix + '\uf8ff')
-                    .get()
-                    .then(snapshot => {
-                        snapshot.forEach(doc => { weekBookings[doc.id] = doc.data(); });
-                    });
-            });
+            const queries = [...weekKeysNeeded]
+                .filter(wk => wk !== currentWk)
+                .map(wk => {
+                    const qPrefix = `${res.id}_${wk}`;
+                    return db.collection('appointments')
+                        .where(firebase.firestore.FieldPath.documentId(), '>=', qPrefix)
+                        .where(firebase.firestore.FieldPath.documentId(), '<', qPrefix + '\uf8ff')
+                        .get()
+                        .then(snapshot => {
+                            snapshot.forEach(doc => { weekBookings[doc.id] = doc.data(); });
+                        });
+                });
             await Promise.all(queries);
         } catch (e) {
             showLoading(false);
@@ -2978,10 +3033,13 @@ const firebaseConfig = {
         document.getElementById('editResName').value = r.name;
         document.getElementById('editMaxDuration').value = r.maxDuration;
         document.getElementById('editResOrientation').checked = r.hasStaffField || false;
+        cancelStaffNameEdit();
+        toggleStaffNamesConfig();
         document.getElementById('editViewMode').value = r.viewMode || 'week';
         renderSubRoomCards(r);
         document.getElementById('editDefaultShowNotes').checked = r.defaultShowNotes || false;
         document.getElementById('editAdminOnly').checked = r.adminOnly || false;
+        document.getElementById('editAnonymityBuffer').value = r.anonymityBufferMonths || 0;
         document.getElementById('editAllowRecurring').checked = r.allowRecurring || false;
         document.getElementById('editUseQuarterHour').checked = r.useQuarterHour || false;
 
@@ -3026,6 +3084,7 @@ const firebaseConfig = {
         });
         
         // Load Closure Dates
+        cancelClosureEdit();
         renderClosureList(r);
     }
     
@@ -3327,6 +3386,54 @@ const firebaseConfig = {
     // --- CLOSURE DATE MANAGEMENT ---
     // Adding/removing closure dates (holidays), year-based storage, rendering the
     // closure list in admin panel, and applying closures across multiple resources.
+
+    let editingClosureKey = null; // Set when editing an existing closure
+
+    function toggleClosureEndDate(show) {
+        document.getElementById('closureEndDateSection').style.display = show ? '' : 'none';
+        document.getElementById('closureAddEndDateLink').style.display = show ? 'none' : '';
+        if (!show) document.getElementById('newClosureEndDate').value = '';
+    }
+
+    function cancelClosureEdit() {
+        editingClosureKey = null;
+        document.getElementById('newClosureDate').value = '';
+        document.getElementById('newClosureEndDate').value = '';
+        document.getElementById('newClosureReason').value = '';
+        toggleClosureEndDate(false);
+        document.getElementById('closureAddBtn').textContent = 'Add';
+        document.getElementById('closureCancelEditLink').style.display = 'none';
+    }
+
+    function editClosureDate(key) {
+        const editId = document.getElementById('settingResSelect').value;
+        const r = resources.find(x => x.id === editId);
+        if (!r || !r.closuresByYear) return;
+
+        const parts = key.split('|');
+        const startDate = parts[0];
+        const endDate = parts[1] || null;
+        const year = startDate.substring(0, 4);
+        if (!r.closuresByYear[year]) return;
+
+        const closure = r.closuresByYear[year].find(c => {
+            if (endDate) return c.date === startDate && c.endDate === endDate;
+            return c.date === startDate && !c.endDate;
+        });
+        if (!closure) return;
+
+        editingClosureKey = key;
+        document.getElementById('newClosureDate').value = closure.date;
+        if (closure.endDate && closure.endDate !== closure.date) {
+            toggleClosureEndDate(true);
+            document.getElementById('newClosureEndDate').value = closure.endDate;
+        } else {
+            toggleClosureEndDate(false);
+        }
+        document.getElementById('newClosureReason').value = closure.reason || '';
+        document.getElementById('closureAddBtn').textContent = 'Update';
+        document.getElementById('closureCancelEditLink').style.display = '';
+    }
     function renderClosureList(res) {
         // If called without argument, get current resource
         if (!res || typeof res !== 'object') {
@@ -3379,14 +3486,21 @@ const firebaseConfig = {
             }
             
             const removeKey = c.endDate ? `${c.date}|${c.endDate}` : c.date;
-            
+            const lastDate = new Date((c.endDate || c.date) + 'T00:00');
+            const today = new Date();
+            today.setHours(0, 0, 0, 0);
+            const isPast = lastDate < today;
+
             return `
-                <div class="closure-item">
+                <div class="closure-item${isPast ? ' closure-item-past' : ''}">
                     <div class="closure-item-info">
                         <span class="closure-item-date">${dateDisplay}</span>
                         <span class="closure-item-reason">${escapeHtml(c.reason || 'No reason specified')}</span>
                     </div>
-                    <button class="btn-danger" onclick="removeClosureDate('${removeKey}')">Remove</button>
+                    ${isPast ? '' : `<div class="closure-item-actions">
+                        <button onclick="editClosureDate('${removeKey}')">Edit</button>
+                        <button class="btn-danger" onclick="removeClosureDate('${removeKey}')">Remove</button>
+                    </div>`}
                 </div>
             `;
         }).join('');
@@ -3396,32 +3510,53 @@ const firebaseConfig = {
         const dateInput = document.getElementById('newClosureDate');
         const endDateInput = document.getElementById('newClosureEndDate');
         const reasonInput = document.getElementById('newClosureReason');
-        
+
         const startDate = dateInput.value;
-        const endDate = endDateInput.value;
+        // Only read end date if the range section is visible
+        const endDateVisible = document.getElementById('closureEndDateSection').style.display !== 'none';
+        const endDate = endDateVisible ? endDateInput.value : '';
         const reason = reasonInput.value.trim();
-        
+
         if (!startDate) {
-            showToast("Please select a start date.", "error");
+            showToast("Please select a date.", "error");
             return;
         }
-        
+
         if (endDate && endDate < startDate) {
             showToast("End date must be on or after start date.", "error");
             return;
         }
-        
+
         const editId = document.getElementById('settingResSelect').value;
         const r = resources.find(x => x.id === editId);
         if (!r) return;
-        
+
         if (!r.closuresByYear) r.closuresByYear = {};
         const year = startDate.substring(0, 4);
         if (!r.closuresByYear[year]) r.closuresByYear[year] = [];
-        
+
         const newStart = startDate;
         const newEnd = endDate || startDate;
-        
+
+        // If editing, temporarily remove old entry so overlap check doesn't flag itself
+        let removedEntry = null;
+        let removedYear = null;
+        if (editingClosureKey) {
+            const oldParts = editingClosureKey.split('|');
+            const oldStart = oldParts[0];
+            const oldEnd = oldParts[1] || null;
+            removedYear = oldStart.substring(0, 4);
+            if (r.closuresByYear[removedYear]) {
+                const idx = r.closuresByYear[removedYear].findIndex(c => {
+                    if (oldEnd) return c.date === oldStart && c.endDate === oldEnd;
+                    return c.date === oldStart && !c.endDate;
+                });
+                if (idx >= 0) removedEntry = r.closuresByYear[removedYear].splice(idx, 1)[0];
+                if (r.closuresByYear[removedYear].length === 0) delete r.closuresByYear[removedYear];
+            }
+            if (!r.closuresByYear[year]) r.closuresByYear[year] = [];
+        }
+
         // Check for overlapping closures across all years
         const allClosures = getAllClosures(r);
         const hasOverlap = allClosures.some(c => {
@@ -3429,72 +3564,103 @@ const firebaseConfig = {
             const existingEnd = c.endDate || c.date;
             return newStart <= existingEnd && newEnd >= existingStart;
         });
-        
+
         if (hasOverlap) {
+            // Restore old entry if editing
+            if (removedEntry) {
+                if (!r.closuresByYear[removedYear]) r.closuresByYear[removedYear] = [];
+                r.closuresByYear[removedYear].push(removedEntry);
+            }
             showToast("This date range overlaps with an existing closure.", "error");
             return;
         }
-        
-        // Check for existing bookings on the affected dates
-        const affectedDates = [];
-        let scanDate = new Date(newStart + 'T00:00:00');
-        const scanEnd = new Date(newEnd + 'T00:00:00');
-        while (scanDate <= scanEnd) {
-            affectedDates.push(new Date(scanDate));
-            scanDate.setDate(scanDate.getDate() + 1);
+
+        // Check for existing bookings on the affected dates (skip if dates unchanged during edit)
+        const isEditing = !!editingClosureKey;
+        const oldParts = isEditing ? editingClosureKey.split('|') : [];
+        const datesChanged = !isEditing || oldParts[0] !== startDate || (oldParts[1] || '') !== (endDate || '');
+
+        if (datesChanged) {
+            const affectedDates = [];
+            let scanDate = new Date(newStart + 'T00:00:00');
+            const scanEnd = new Date(newEnd + 'T00:00:00');
+            while (scanDate <= scanEnd) {
+                affectedDates.push(new Date(scanDate));
+                scanDate.setDate(scanDate.getDate() + 1);
+            }
+
+            let totalConflicts = 0;
+            const conflictDates = [];
+            try {
+                const weekGroups = {};
+                affectedDates.forEach(date => {
+                    const weekKey = getWeekKey(date);
+                    const groupKey = `${editId}_${weekKey}`;
+                    if (!weekGroups[groupKey]) weekGroups[groupKey] = [];
+                    weekGroups[groupKey].push(date);
+                });
+                const queries = Object.entries(weekGroups).map(([groupPrefix, dates]) => {
+                    const dayIndices = new Set(dates.map(d => d.getDay()));
+                    return db.collection('appointments')
+                        .where(firebase.firestore.FieldPath.documentId(), '>=', groupPrefix)
+                        .where(firebase.firestore.FieldPath.documentId(), '<', groupPrefix + '\uf8ff')
+                        .get()
+                        .then(snapshot => {
+                            snapshot.forEach(doc => {
+                                const idParts = doc.id.substring(groupPrefix.length + 1).split('_');
+                                const docDayIdx = parseInt(idParts[0]);
+                                if (dayIndices.has(docDayIdx)) {
+                                    totalConflicts++;
+                                    const matchDate = dates.find(d => d.getDay() === docDayIdx);
+                                    if (matchDate) {
+                                        const dateStr = matchDate.toLocaleDateString('en-US', { weekday: 'short', month: 'short', day: 'numeric' });
+                                        if (!conflictDates.includes(dateStr)) conflictDates.push(dateStr);
+                                    }
+                                }
+                            });
+                        });
+                });
+                await Promise.all(queries);
+            } catch (e) {
+                // If query fails, proceed without warning
+            }
+
+            if (totalConflicts > 0) {
+                const dateList = conflictDates.length <= 5
+                    ? conflictDates.join(', ')
+                    : conflictDates.slice(0, 5).join(', ') + ` and ${conflictDates.length - 5} more`;
+                const msg = `${totalConflicts} existing booking(s) found on: ${dateList}.\n\nThey will be hidden but not deleted. Remove them manually if needed.\n\nContinue?`;
+                if (!confirm(msg)) return;
+            }
         }
-        
-        let totalConflicts = 0;
-        const conflictDates = [];
-        try {
-            const queries = affectedDates.map(date => {
-                const weekKey = getWeekKey(date);
-                const dayIdx = date.getDay();
-                const prefix = `${editId}_${weekKey}_${dayIdx}_`;
-                return db.collection('appointments')
-                    .where(firebase.firestore.FieldPath.documentId(), '>=', prefix)
-                    .where(firebase.firestore.FieldPath.documentId(), '<', prefix + '\uf8ff')
-                    .get()
-                    .then(snapshot => {
-                        if (!snapshot.empty) {
-                            totalConflicts += snapshot.size;
-                            conflictDates.push(date.toLocaleDateString('en-US', { weekday: 'short', month: 'short', day: 'numeric' }));
-                        }
-                    });
-            });
-            await Promise.all(queries);
-        } catch (e) {
-            // If query fails, proceed without warning
-        }
-        
-        if (totalConflicts > 0) {
-            const dateList = conflictDates.length <= 5 
-                ? conflictDates.join(', ') 
-                : conflictDates.slice(0, 5).join(', ') + ` and ${conflictDates.length - 5} more`;
-            const msg = `${totalConflicts} existing booking(s) found on: ${dateList}.\n\nThey will be hidden but not deleted. Remove them manually if needed.\n\nContinue adding this closure?`;
-            if (!confirm(msg)) return;
-        }
-        
-        const closureEntry = { 
-            date: startDate, 
-            reason: reason || 'Closed' 
+
+        const closureEntry = {
+            date: startDate,
+            reason: reason || 'Closed'
         };
-        
+
         if (endDate && endDate !== startDate) {
             closureEntry.endDate = endDate;
         }
-        
+
         r.closuresByYear[year].push(closureEntry);
-        
+
+        // Reset form
         dateInput.value = '';
         endDateInput.value = '';
         reasonInput.value = '';
-        
+        toggleClosureEndDate(false);
+
+        const wasEditing = !!editingClosureKey;
+        editingClosureKey = null;
+        document.getElementById('closureAddBtn').textContent = 'Add';
+        document.getElementById('closureCancelEditLink').style.display = 'none';
+
         // Switch year selector to the year we just added to
         document.getElementById('closureYearSelect').value = year;
-        
+
         renderClosureList(r);
-        showToast("Closure date added. Remember to save changes.", "success");
+        showToast(wasEditing ? "Closure date updated. Remember to save changes." : "Closure date added. Remember to save changes.", "success");
     }
 
     function removeClosureDate(key) {
@@ -3528,33 +3694,55 @@ const firebaseConfig = {
         const editId = document.getElementById('settingResSelect').value;
         const sourceRes = resources.find(x => x.id === editId);
         if (!sourceRes) return;
-        
+
         const selectedYear = document.getElementById('closureYearSelect').value;
         const closures = getClosuresForYear(sourceRes, selectedYear);
         if (closures.length === 0) {
             showToast(`No closure dates for ${selectedYear} to apply.`, "error");
             return;
         }
-        
+
         const otherResources = resources.filter(r => r.id !== editId);
         if (otherResources.length === 0) {
             showToast("No other resources to apply to.", "error");
             return;
         }
-        
-        document.getElementById('applyClosuresDesc').textContent = 
-            `Apply ${closures.length} closure date(s) for ${selectedYear} from "${sourceRes.name}" to:`;
-        
+
+        document.getElementById('applyClosuresDesc').textContent =
+            `Apply closures for ${selectedYear} from "${sourceRes.name}":`;
+
+        // Closure selection checkboxes
+        const sorted = [...closures].sort((a, b) => a.date.localeCompare(b.date));
+        const dateContainer = document.getElementById('applyClosuresDateCheckboxes');
+        dateContainer.innerHTML = sorted.map((c, idx) => {
+            const startDate = new Date(c.date + 'T00:00');
+            const startFmt = startDate.toLocaleDateString('en-US', { weekday: 'short', month: 'short', day: 'numeric' });
+            let dateDisplay;
+            if (c.endDate && c.endDate !== c.date) {
+                const endDate = new Date(c.endDate + 'T00:00');
+                const endFmt = endDate.toLocaleDateString('en-US', { weekday: 'short', month: 'short', day: 'numeric' });
+                dateDisplay = startFmt + ' \u2192 ' + endFmt;
+            } else {
+                dateDisplay = startFmt;
+            }
+            const key = c.endDate ? c.date + '|' + c.endDate : c.date;
+            return `<label style="display:flex; align-items:center; gap:8px; padding:4px 8px; cursor:pointer; font-size:0.88em;">
+                <input type="checkbox" name="applyClosureDate" value="${key}" style="width:auto;">
+                <span><strong>${dateDisplay}</strong> <span style="color:#666;">${escapeHtml(c.reason || '')}</span></span>
+            </label>`;
+        }).join('');
+
+        // Target resource checkboxes
         const container = document.getElementById('applyClosuresCheckboxes');
         container.innerHTML = otherResources.map(r => {
             const existing = getClosuresForYear(r, selectedYear).length;
             const note = existing > 0 ? ` (${existing} existing)` : '';
-            return `<label style="display:flex; align-items:center; gap:8px; padding:6px 4px; cursor:pointer;">
-                <input type="checkbox" value="${r.id}" checked style="width:auto;">
+            return `<label style="display:flex; align-items:center; gap:8px; padding:4px 8px; cursor:pointer; font-size:0.88em;">
+                <input type="checkbox" name="applyClosureTarget" value="${r.id}" checked style="width:auto;">
                 <span>${escapeHtml(r.name)}${note}</span>
             </label>`;
         }).join('');
-        
+
         document.getElementById('applyClosuresModal').style.display = 'flex';
     }
     
@@ -3562,22 +3750,37 @@ const firebaseConfig = {
         const editId = document.getElementById('settingResSelect').value;
         const sourceRes = resources.find(x => x.id === editId);
         const selectedYear = document.getElementById('closureYearSelect').value;
-        const closures = getClosuresForYear(sourceRes, selectedYear);
-        
-        const checkboxes = document.querySelectorAll('#applyClosuresCheckboxes input[type="checkbox"]:checked');
-        const targetIds = [...checkboxes].map(cb => cb.value);
-        
+        const allClosures = getClosuresForYear(sourceRes, selectedYear);
+
+        // Get selected closure keys
+        const dateCheckboxes = document.querySelectorAll('input[name="applyClosureDate"]:checked');
+        const selectedKeys = new Set([...dateCheckboxes].map(cb => cb.value));
+
+        if (selectedKeys.size === 0) {
+            showToast("No closure dates selected.", "error");
+            return;
+        }
+
+        // Filter to only selected closures
+        const closures = allClosures.filter(c => {
+            const key = c.endDate ? c.date + '|' + c.endDate : c.date;
+            return selectedKeys.has(key);
+        });
+
+        const targetCheckboxes = document.querySelectorAll('input[name="applyClosureTarget"]:checked');
+        const targetIds = [...targetCheckboxes].map(cb => cb.value);
+
         if (targetIds.length === 0) {
             showToast("No resources selected.", "error");
             return;
         }
-        
+
         let applied = 0;
         resources.forEach(r => {
             if (!targetIds.includes(r.id)) return;
             if (!r.closuresByYear) r.closuresByYear = {};
             if (!r.closuresByYear[selectedYear]) r.closuresByYear[selectedYear] = [];
-            
+
             closures.forEach(c => {
                 if (!r.closuresByYear[selectedYear].some(existing => existing.date === c.date)) {
                     r.closuresByYear[selectedYear].push({ ...c });
@@ -3585,12 +3788,185 @@ const firebaseConfig = {
             });
             applied++;
         });
-        
+
         closeModal('applyClosuresModal');
         showLoading(true);
         try {
             await db.collection('system').doc('resources').set({ list: resources });
-            showToast(`${selectedYear} closures applied to ${applied} resource(s).`, "success");
+            showToast(`${closures.length} closure(s) applied to ${applied} resource(s).`, "success");
+        } catch (e) {
+            showToast("Error: " + e.message, "error");
+        }
+        showLoading(false);
+    }
+
+    // --- STAFF NAME LIST MANAGEMENT ---
+    let editingStaffNameIdx = null;
+
+    function toggleStaffNamesConfig() {
+        const show = document.getElementById('editResOrientation').checked;
+        document.getElementById('staffNamesConfig').classList.toggle('hidden', !show);
+        if (show) renderStaffNameList();
+    }
+
+    function renderStaffNameList() {
+        const editId = document.getElementById('settingResSelect').value;
+        const r = resources.find(x => x.id === editId);
+        if (!r) return;
+        const names = r.staffNames || [];
+        const container = document.getElementById('staffNameList');
+        if (names.length === 0) {
+            container.innerHTML = '<div class="closure-empty">No staff names configured</div>';
+            return;
+        }
+        const sorted = [...names].sort((a, b) => a.localeCompare(b, undefined, { sensitivity: 'base' }));
+        container.innerHTML = sorted.map(name => {
+            return `<div class="closure-item">
+                <div class="closure-item-info"><span class="closure-item-date">${escapeHtml(name)}</span></div>
+                <div class="closure-item-actions">
+                    <button onclick="editStaffName('${escapeHtml(name).replace(/'/g, "\\'")}')">Edit</button>
+                    <button class="btn-danger" onclick="removeStaffName('${escapeHtml(name).replace(/'/g, "\\'")}')">Remove</button>
+                </div>
+            </div>`;
+        }).join('');
+    }
+
+    function addStaffName() {
+        const input = document.getElementById('newStaffName');
+        const name = input.value.trim();
+        if (!name) { showToast("Please enter a name.", "error"); return; }
+
+        const editId = document.getElementById('settingResSelect').value;
+        const r = resources.find(x => x.id === editId);
+        if (!r) return;
+        if (!r.staffNames) r.staffNames = [];
+
+        // Check for duplicates (case-insensitive)
+        const nameLower = name.toLowerCase();
+        const existingIdx = r.staffNames.findIndex(n => n.toLowerCase() === nameLower);
+
+        if (editingStaffNameIdx !== null) {
+            // Editing: check duplicate isn't a different entry
+            if (existingIdx >= 0 && existingIdx !== editingStaffNameIdx) {
+                showToast("This name already exists.", "error"); return;
+            }
+            r.staffNames[editingStaffNameIdx] = name;
+            editingStaffNameIdx = null;
+            document.getElementById('staffNameAddBtn').textContent = 'Add';
+            document.getElementById('staffNameCancelEditLink').style.display = 'none';
+            showToast("Staff name updated. Remember to save changes.", "success");
+        } else {
+            if (existingIdx >= 0) {
+                showToast("This name already exists.", "error"); return;
+            }
+            r.staffNames.push(name);
+            showToast("Staff name added. Remember to save changes.", "success");
+        }
+
+        input.value = '';
+        renderStaffNameList();
+    }
+
+    function editStaffName(name) {
+        const editId = document.getElementById('settingResSelect').value;
+        const r = resources.find(x => x.id === editId);
+        if (!r || !r.staffNames) return;
+        const idx = r.staffNames.indexOf(name);
+        if (idx < 0) return;
+
+        editingStaffNameIdx = idx;
+        document.getElementById('newStaffName').value = name;
+        document.getElementById('staffNameAddBtn').textContent = 'Update';
+        document.getElementById('staffNameCancelEditLink').style.display = '';
+    }
+
+    function cancelStaffNameEdit() {
+        editingStaffNameIdx = null;
+        document.getElementById('newStaffName').value = '';
+        document.getElementById('staffNameAddBtn').textContent = 'Add';
+        document.getElementById('staffNameCancelEditLink').style.display = 'none';
+    }
+
+    function removeStaffName(name) {
+        const editId = document.getElementById('settingResSelect').value;
+        const r = resources.find(x => x.id === editId);
+        if (!r || !r.staffNames) return;
+        r.staffNames = r.staffNames.filter(n => n !== name);
+        cancelStaffNameEdit();
+        renderStaffNameList();
+        showToast("Staff name removed. Remember to save changes.", "success");
+    }
+
+    function openApplyStaffNamesModal() {
+        const editId = document.getElementById('settingResSelect').value;
+        const sourceRes = resources.find(x => x.id === editId);
+        if (!sourceRes) return;
+
+        const names = sourceRes.staffNames || [];
+        if (names.length === 0) {
+            showToast("No staff names to apply.", "error"); return;
+        }
+
+        const otherResources = resources.filter(r => r.id !== editId && r.hasStaffField);
+        if (otherResources.length === 0) {
+            showToast("No other resources with staff fields enabled.", "error"); return;
+        }
+
+        document.getElementById('applyStaffNamesDesc').textContent =
+            `Apply staff names from "${sourceRes.name}":`;
+
+        const sorted = [...names].sort((a, b) => a.localeCompare(b, undefined, { sensitivity: 'base' }));
+        document.getElementById('applyStaffNameCheckboxes').innerHTML = sorted.map(name => {
+            return `<label style="display:flex; align-items:center; gap:8px; padding:4px 8px; cursor:pointer; font-size:0.88em;">
+                <input type="checkbox" name="applyStaffName" value="${escapeHtml(name)}" style="width:auto;">
+                <span>${escapeHtml(name)}</span>
+            </label>`;
+        }).join('');
+
+        document.getElementById('applyStaffNameTargetCheckboxes').innerHTML = otherResources.map(r => {
+            const existing = (r.staffNames || []).length;
+            const note = existing > 0 ? ` (${existing} existing)` : '';
+            return `<label style="display:flex; align-items:center; gap:8px; padding:4px 8px; cursor:pointer; font-size:0.88em;">
+                <input type="checkbox" name="applyStaffNameTarget" value="${r.id}" checked style="width:auto;">
+                <span>${escapeHtml(r.name)}${note}</span>
+            </label>`;
+        }).join('');
+
+        document.getElementById('applyStaffNamesModal').style.display = 'flex';
+    }
+
+    async function confirmApplyStaffNames() {
+        const nameCheckboxes = document.querySelectorAll('input[name="applyStaffName"]:checked');
+        const selectedNames = [...nameCheckboxes].map(cb => cb.value);
+
+        if (selectedNames.length === 0) {
+            showToast("No names selected.", "error"); return;
+        }
+
+        const targetCheckboxes = document.querySelectorAll('input[name="applyStaffNameTarget"]:checked');
+        const targetIds = [...targetCheckboxes].map(cb => cb.value);
+
+        if (targetIds.length === 0) {
+            showToast("No resources selected.", "error"); return;
+        }
+
+        let applied = 0;
+        resources.forEach(r => {
+            if (!targetIds.includes(r.id)) return;
+            if (!r.staffNames) r.staffNames = [];
+            selectedNames.forEach(name => {
+                if (!r.staffNames.some(n => n.toLowerCase() === name.toLowerCase())) {
+                    r.staffNames.push(name);
+                }
+            });
+            applied++;
+        });
+
+        closeModal('applyStaffNamesModal');
+        showLoading(true);
+        try {
+            await db.collection('system').doc('resources').set({ list: resources });
+            showToast(`${selectedNames.length} name(s) applied to ${applied} resource(s).`, "success");
         } catch (e) {
             showToast("Error: " + e.message, "error");
         }
@@ -3683,7 +4059,8 @@ const firebaseConfig = {
                 advanceLimitEnabled: false,
                 advanceLimitDays: 1,
                 advanceLimitAdminBypass: false,
-                allowRecurring: false
+                allowRecurring: false,
+                anonymityBufferMonths: 0
             };
             
             // Populate closure dates dropdown
@@ -3738,7 +4115,8 @@ const firebaseConfig = {
                 advanceLimitEnabled: false,
                 advanceLimitDays: 1,
                 advanceLimitAdminBypass: false,
-                allowRecurring: false
+                allowRecurring: false,
+                anonymityBufferMonths: 0
             };
             try { 
                 pendingSelectionId = newRes.id;
@@ -3782,6 +4160,7 @@ const firebaseConfig = {
                     : [];
                 pendingNewResource.adminOnly = source.adminOnly || false;
                 pendingNewResource.allowRecurring = source.allowRecurring || false;
+                pendingNewResource.anonymityBufferMonths = source.anonymityBufferMonths || 0;
                 pendingNewResource.colorPalette = source.colorPalette || 'default';
             }
         } else {
@@ -3892,6 +4271,7 @@ const firebaseConfig = {
         target.name = document.getElementById('editResName').value;
         target.maxDuration = parseFloat(document.getElementById('editMaxDuration').value) || 2;
         target.hasStaffField = document.getElementById('editResOrientation').checked;
+        target.staffNames = r.staffNames || [];
         const newViewMode = document.getElementById('editViewMode').value;
         if (newViewMode !== (r.viewMode || 'week')) {
             const modeLabel = newViewMode === 'day' ? 'Day View' : 'Week View';
@@ -3903,6 +4283,7 @@ const firebaseConfig = {
         target.subRooms = readSubRoomCards(target);
         target.defaultShowNotes = document.getElementById('editDefaultShowNotes').checked;
         target.adminOnly = document.getElementById('editAdminOnly').checked;
+        target.anonymityBufferMonths = parseInt(document.getElementById('editAnonymityBuffer').value, 10) || 0;
         target.allowRecurring = document.getElementById('editAllowRecurring').checked;
         target.useQuarterHour = document.getElementById('editUseQuarterHour').checked;
 
@@ -3930,9 +4311,143 @@ const firebaseConfig = {
             await db.collection('system').doc('resources').set({ list: updatedList }); 
             showToast("Settings Saved!", "success"); 
             closeModal('settingsOverlay');
+            
+            // Run the lazy janitor in the background to scrub old bookings
+            runLazyJanitor(target);
         } 
         catch (e) { showToast("Error: " + e.message, "error"); }
         showLoading(false);
+    }
+
+    async function checkAndRunJanitor() {
+        try {
+            const now = new Date();
+            const monthKey = now.getFullYear() + "-" + (now.getMonth() + 1);
+            const janitorRef = db.collection('system').doc('janitor');
+            
+            const shouldRun = await db.runTransaction(async (transaction) => {
+                const janitorDoc = await transaction.get(janitorRef);
+                let lastRunMonth = "";
+                if (janitorDoc.exists) {
+                    lastRunMonth = janitorDoc.data().lastRunMonth || "";
+                }
+                
+                // Run automatically if we haven't run for this month yet
+                if (lastRunMonth !== monthKey) {
+                    transaction.set(janitorRef, { lastRunMonth: monthKey }, { merge: true });
+                    return true;
+                }
+                return false;
+            });
+
+            if (shouldRun) {
+                resources.forEach(res => runLazyJanitor(res));
+            }
+        } catch (e) {
+            console.error("Janitor check failed:", e);
+        }
+    }
+
+    async function runLazyJanitor(res) {
+        if (!res) return;
+
+        try {
+            const today = new Date();
+            const buffer = parseInt(res.anonymityBufferMonths || 0, 10);
+            
+            let cutoffDate = new Date(today);
+            if (buffer > 0) {
+                cutoffDate = new Date(today.getFullYear(), today.getMonth() - buffer, 1);
+            }
+            
+            const cutoffWeekKey = getWeekKey(cutoffDate);
+            const startWeekKey = res.lastScrubbedWeekKey || "";
+            
+            // If the bookmark is ahead of the cutoff (e.g. buffer was increased),
+            // everything up to the bookmark is already scrubbed. We can just wait
+            // for the cutoff to catch up to the bookmark in future months.
+            if (startWeekKey && startWeekKey > cutoffWeekKey) {
+                return;
+            }
+            
+            let scrubCount = 0;
+            let lastDoc = null;
+            let hasMore = true;
+
+            while (hasMore) {
+                let query = db.collection('appointments')
+                    .where(firebase.firestore.FieldPath.documentId(), '>=', res.id + '_' + startWeekKey)
+                    .where(firebase.firestore.FieldPath.documentId(), '<=', res.id + '_' + cutoffWeekKey + '\uf8ff')
+                    .limit(500);
+
+                if (lastDoc) {
+                    query = query.startAfter(lastDoc);
+                }
+
+                const snapshot = await query.get();
+                
+                if (snapshot.empty) {
+                    hasMore = false;
+                    break;
+                }
+
+                lastDoc = snapshot.docs[snapshot.docs.length - 1];
+                let batch = db.batch();
+                let batchCount = 0;
+
+                for (const doc of snapshot.docs) {
+                    const data = doc.data();
+                    if (data.isScrubbed || (data.name === "Anonymized Patron" && !data.notes)) {
+                        continue;
+                    }
+
+                    const prefix = res.id + "_";
+                    const suffix = doc.id.substring(prefix.length);
+                    const parts = suffix.split('_');
+                    const weekKey = parts[0];
+                    const dayIdx = parseInt(parts[1]);
+
+                    if (isBookingAnonymized(weekKey, dayIdx, res, today)) {
+                        batch.update(doc.ref, {
+                            name: "Anonymized Patron",
+                            notes: "",
+                            isScrubbed: true
+                        });
+                        scrubCount++;
+                        batchCount++;
+                    }
+                }
+
+                if (batchCount > 0) {
+                    await batch.commit();
+                }
+
+                if (snapshot.docs.length < 500) {
+                    hasMore = false;
+                }
+            }
+
+            if (scrubCount > 0) {
+                console.log(`Lazy Janitor scrubbed ${scrubCount} old bookings for resource ${res.name}.`);
+            }
+            
+            // Update the checkpoint so we don't re-read these weeks next month
+            if (res.lastScrubbedWeekKey !== cutoffWeekKey) {
+                const systemRef = db.collection('system').doc('resources');
+                const systemDoc = await systemRef.get();
+                if (systemDoc.exists) {
+                    const list = systemDoc.data().list;
+                    const rIndex = list.findIndex(r => r.id === res.id);
+                    if (rIndex !== -1) {
+                        list[rIndex].lastScrubbedWeekKey = cutoffWeekKey;
+                        await systemRef.update({ list });
+                        res.lastScrubbedWeekKey = cutoffWeekKey;
+                    }
+                }
+            }
+        } catch (err) {
+            console.error("Janitor error:", err);
+        }
     }
     
     function handleResourceChange() {
@@ -4034,6 +4549,17 @@ const firebaseConfig = {
         const booking = allBookings[slotId];
         if(!booking) return closeModal('bookingModal');
         
+        const res = resources.find(r => r.id === currentResId);
+        const prefix = res.id + "_";
+        const suffix = slotId.substring(prefix.length); 
+        const parts = suffix.split('_');
+        const weekKey = parts[0];
+        const dayIdx = parseInt(parts[1]);
+        
+        if (isBookingLocked(weekKey, dayIdx, res)) {
+            return showToast("Cannot delete a past booking.", "error");
+        }
+        
         if (booking.seriesId) {
             // Series booking - show series delete modal
             pendingSeriesDeleteSlotId = slotId;
@@ -4063,6 +4589,7 @@ const firebaseConfig = {
             showLoading(true);
             try {
                 await db.collection('appointments').doc(pendingSeriesDeleteSlotId).delete();
+                delete statsBookingsCache[`${currentResId}_${new Date().getFullYear()}`];
                 closeModal('bookingModal');
                 showToast('Booking deleted.', 'success');
             } catch (e) {
@@ -4079,6 +4606,7 @@ const firebaseConfig = {
                 const batch = db.batch();
                 snapshot.forEach(doc => batch.delete(doc.ref));
                 await batch.commit();
+                delete statsBookingsCache[`${currentResId}_${new Date().getFullYear()}`];
                 closeModal('bookingModal');
                 showToast(snapshot.size + ' booking(s) in series deleted.', 'success');
             } catch (e) {
@@ -4254,6 +4782,7 @@ const firebaseConfig = {
                 meta[resId].push(year);
                 meta[resId].sort((a, b) => b - a); // Sort descending
                 await metaRef.set(meta);
+                statsMetaCache = meta; // Update in-memory cache
             }
         } catch (err) {
             console.error('Error updating stats meta:', err);
@@ -4288,13 +4817,18 @@ const firebaseConfig = {
         yearSel.innerHTML = '<option>Loading...</option>';
         
         try {
-            // Read from stats_meta document (single read)
-            const metaDoc = await db.collection('system').doc('stats_meta').get();
-            
+            // Use in-memory cache if available, otherwise read from Firestore
+            let metaData = statsMetaCache;
+            if (!metaData) {
+                const metaDoc = await db.collection('system').doc('stats_meta').get();
+                metaData = metaDoc.exists ? metaDoc.data() : {};
+                statsMetaCache = metaData;
+            }
+
             const yearsWithData = new Set();
-            
-            if (metaDoc.exists && metaDoc.data()[resId]) {
-                metaDoc.data()[resId].forEach(y => yearsWithData.add(y));
+
+            if (metaData[resId]) {
+                metaData[resId].forEach(y => yearsWithData.add(y));
             }
             
             // Always include current and next year
@@ -4340,35 +4874,17 @@ const firebaseConfig = {
     }
     
     async function fetchBookingsForYear(resId, year) {
-        const startDate = new Date(year, 0, 1);
-        const endDate = new Date(year, 11, 31);
-
-        const weekKeys = new Set();
-        let d = new Date(startDate);
-        while (d <= endDate) {
-            const weekStart = getWeekStart(d);
-            weekKeys.add(getWeekKey(weekStart));
-            d.setDate(d.getDate() + 7);
-        }
-
+        // Single range query instead of ~53 per-week queries.
+        // Slightly wider range catches boundary weeks that span year edges.
+        // buildDailyStats() filters by exact year, so over-fetched docs are harmless.
+        const lowerBound = `${resId}_${year - 1}-12-25`;
+        const upperBound = `${resId}_${year + 1}-01-08`;
+        const snapshot = await db.collection('appointments')
+            .where('__name__', '>=', lowerBound)
+            .where('__name__', '<', upperBound)
+            .get();
         const bookings = {};
-        const promises = [];
-
-        weekKeys.forEach(weekKey => {
-            const prefix = `${resId}_${weekKey}`;
-            const promise = db.collection('appointments')
-                .where('__name__', '>=', prefix)
-                .where('__name__', '<', prefix + '\uffff')
-                .get()
-                .then(snapshot => {
-                    snapshot.forEach(doc => {
-                        bookings[doc.id] = doc.data();
-                    });
-                });
-            promises.push(promise);
-        });
-
-        await Promise.all(promises);
+        snapshot.forEach(doc => { bookings[doc.id] = doc.data(); });
         return bookings;
     }
 
@@ -4432,7 +4948,7 @@ const firebaseConfig = {
         Object.keys(bookings).forEach(key => {
             const b = bookings[key];
             slim[key] = { duration: b.duration || 0 };
-            if (b.hasStaff) slim[key].hasStaff = true;
+            if (b.hasStaff) { slim[key].hasStaff = true; if (b.staffName) slim[key].staffName = b.staffName; }
         });
         return slim;
     }
@@ -4454,13 +4970,23 @@ const firebaseConfig = {
 
         try {
             let bookings;
+            const memoryCacheKey = `${resId}_${year}`;
 
-            // For past years, try loading from cache first (1 read instead of ~53)
-            if (isPastYear && !forceRefresh) {
+            // Check in-memory session cache first (avoids all reads on repeated opens)
+            if (!forceRefresh && statsBookingsCache[memoryCacheKey]) {
+                const cached = statsBookingsCache[memoryCacheKey];
+                if (Date.now() - cached.fetchedAt < STATS_CACHE_TTL) {
+                    bookings = cached.bookings;
+                }
+            }
+
+            // For past years, try loading from Firestore cache (1 read instead of ~53)
+            if (!bookings && isPastYear && !forceRefresh) {
                 const cacheDocId = getStatsCacheDocId(resId, year);
                 const cacheDoc = await db.collection('system').doc(cacheDocId).get();
                 if (cacheDoc.exists) {
                     bookings = cacheDoc.data().bookings || {};
+                    statsBookingsCache[memoryCacheKey] = { bookings, fetchedAt: Date.now() };
                 }
             }
 
@@ -4473,7 +4999,10 @@ const firebaseConfig = {
                     updateStatsYearMeta(resId, Object.keys(bookings)[0]);
                 }
 
-                // Cache past year data for future reads
+                // Store in session memory cache
+                statsBookingsCache[memoryCacheKey] = { bookings, fetchedAt: Date.now() };
+
+                // Cache past year data in Firestore for future sessions
                 if (isPastYear) {
                     const cacheDocId = getStatsCacheDocId(resId, year);
                     const slim = slimBookingsForCache(bookings);
@@ -4568,17 +5097,18 @@ const firebaseConfig = {
         const durBuckets = statsData.durationBuckets || {};
         const durKeys = Object.keys(durBuckets).map(Number).sort((a, b) => a - b);
         if (durKeys.length > 0) {
-            const maxDurCount = Math.max(...Object.values(durBuckets));
+            const maxDurCount = Math.max(...durKeys.map(d => durBuckets[d.toString()]));
             html += '<div class="dash-hbar-chart">';
             durKeys.forEach(d => {
                 const count = durBuckets[d.toString()];
-                const pct = (count / maxDurCount) * 100;
+                const pct = s.totalBookings > 0 ? (count / s.totalBookings) * 100 : 0;
                 const label = d < 1 ? (d * 60) + 'm' : d + 'h';
                 const bookPct = s.totalBookings > 0 ? Math.round((count / s.totalBookings) * 100) : 0;
+                const hl = count === maxDurCount ? ' dash-highlight' : '';
                 html += '<div class="dash-hbar-row">';
-                html += '  <div class="dash-hbar-label">' + label + '</div>';
+                html += '  <div class="dash-hbar-label' + hl + '">' + label + '</div>';
                 html += '  <div class="dash-hbar-track" title="' + count + ' bookings (' + bookPct + '%)"><div class="dash-hbar-fill duration" style="width:' + pct + '%;"></div></div>';
-                html += '  <div class="dash-hbar-value">' + count + ' (' + bookPct + '%)</div>';
+                html += '  <div class="dash-hbar-value' + hl + '">' + count + ' (' + bookPct + '%)</div>';
                 html += '</div>';
             });
             html += '</div>';
@@ -4605,9 +5135,10 @@ const firebaseConfig = {
                     const pct = (count / srTotal) * 100;
                     const color = PIE_COLORS[i % PIE_COLORS.length];
                     const roomName = getSubRoomName(res, parseInt(k));
+                    const hl = i === 0 ? ' dash-highlight' : '';
                     gradientParts.push(color + ' ' + cumPct + '% ' + (cumPct + pct) + '%');
                     cumPct += pct;
-                    legendItems.push('<div class="dash-pie-legend-item"><span class="dash-ring-dot" style="background:' + color + ';"></span> ' + roomName + ': ' + count + ' (' + Math.round(pct) + '%)</div>');
+                    legendItems.push('<div class="dash-pie-legend-item' + hl + '"><span class="dash-ring-dot" style="background:' + color + ';"></span> ' + roomName + ': ' + count + ' (' + Math.round(pct) + '%)</div>');
                 });
                 html += '<div class="dash-pie-container">';
                 html += '  <div class="dash-pie" style="background: conic-gradient(' + gradientParts.join(', ') + ');"></div>';
@@ -4632,6 +5163,16 @@ const firebaseConfig = {
         const dowMap = {};
         dowData.forEach(d => { dowMap[d.day] = d; });
         const DOW_FULL = ['Sunday','Monday','Tuesday','Wednesday','Thursday','Friday','Saturday'];
+        // Find peak day utilization for highlighting
+        let peakDowUtil = 0;
+        for (let i = 0; i < 7; i++) {
+            const dayStart = res.hours[i * 2];
+            const dayEnd = res.hours[i * 2 + 1];
+            if (dayStart !== dayEnd) {
+                const entry = dowMap[DOW_FULL[i]];
+                if (entry && entry.utilization > peakDowUtil) peakDowUtil = entry.utilization;
+            }
+        }
         html += '<div class="dash-vbar-chart">';
         for (let i = 0; i < 7; i++) {
             const entry = dowMap[DOW_FULL[i]];
@@ -4645,14 +5186,15 @@ const firebaseConfig = {
             const isClosed = dayStart === dayEnd;
             const pct = isClosed ? 0 : util;
             const fillPct = isClosed ? 0 : Math.min(100, pct);
+            const hl = !isClosed && util > 0 && util === peakDowUtil ? ' dash-highlight' : '';
             const title = isClosed ? DOW_LABELS[i] + ': Closed'
                 : DOW_LABELS[i] + ': avg ' + avgHrs + 'h/day, ' + parseFloat(totalHrs.toFixed(1)) + 'h total / ' + parseFloat(availHrs.toFixed(1)) + 'h avail (' + util + '%) over ' + openDays + ' days';
             html += '<div class="dash-vbar-col">';
-            html += '  <div class="dash-vbar-pct">' + (!isClosed && availHrs > 0 ? Math.round(pct) + '%' : '') + '</div>';
+            html += '  <div class="dash-vbar-pct' + hl + '">' + (!isClosed && availHrs > 0 ? Math.round(pct) + '%' : '') + '</div>';
             html += '  <div class="dash-vbar-wrap" style="height:' + Math.max(fillPct, 2) + '%;" title="' + title + '">';
             html += '    <div class="dash-vbar-fill" style="height:100%;"></div>';
             html += '  </div>';
-            html += '  <div class="dash-vbar-label">' + DOW_LABELS[i] + '</div>';
+            html += '  <div class="dash-vbar-label' + hl + '">' + DOW_LABELS[i] + '</div>';
             html += '</div>';
         }
         html += '</div>';
@@ -4662,20 +5204,28 @@ const firebaseConfig = {
         // Monthly utilization bar chart
         html += '<div class="dash-panel">';
         html += '<div class="dash-panel-title">Monthly Usage</div>';
+        // Find peak month utilization for highlighting
+        let peakMonthPct = 0;
+        for (let i = 0; i < 12; i++) {
+            const avail = mAvail[i] || 0;
+            const pct = avail > 0 ? Math.round((mTotals[i] / avail) * 100) : 0;
+            if (pct > peakMonthPct) peakMonthPct = pct;
+        }
         html += '<div class="dash-vbar-chart">';
         for (let i = 0; i < 12; i++) {
             const booked = mTotals[i] || 0;
             const avail = mAvail[i] || 0;
             const pct = avail > 0 ? Math.round((booked / avail) * 100) : 0;
             const fillPct = avail > 0 ? Math.min(100, (booked / avail) * 100) : 0;
+            const hl = pct > 0 && pct === peakMonthPct ? ' dash-highlight' : '';
             const title = MONTHS[i] + ': ' + parseFloat(booked.toFixed(1)) + 'h / ' + parseFloat(avail.toFixed(1)) + 'h (' + pct + '%)';
 
             html += '<div class="dash-vbar-col">';
-            html += '  <div class="dash-vbar-pct">' + (avail > 0 ? pct + '%' : '') + '</div>';
+            html += '  <div class="dash-vbar-pct' + hl + '">' + (avail > 0 ? pct + '%' : '') + '</div>';
             html += '  <div class="dash-vbar-wrap" style="height:' + Math.max(fillPct, 2) + '%;" title="' + title + '">';
             html += '    <div class="dash-vbar-fill" style="height:100%;"></div>';
             html += '  </div>';
-            html += '  <div class="dash-vbar-label">' + MONTHS[i] + '</div>';
+            html += '  <div class="dash-vbar-label' + hl + '">' + MONTHS[i] + '</div>';
             html += '</div>';
         }
         html += '</div>';
@@ -4683,6 +5233,67 @@ const firebaseConfig = {
         html += '</div>';
 
         html += '</div>'; // end row 2
+
+        // === STAFF ASSISTANCE (full width, conditional) ===
+        if (res.hasStaffField) {
+            const msc = statsData.monthlyStaffCounts || {};
+            const staffNames = Object.keys(msc).sort();
+            const hasStaffData = staffNames.some(n => msc[n].some(c => c > 0));
+            if (hasStaffData) {
+                const STAFF_COLORS = ['#4e79a7', '#f28e2b', '#59a14f', '#e15759', '#b07aa1', '#edc948', '#76b7b2', '#9c755f'];
+                // Find max monthly total for scaling
+                let maxMonthTotal = 0;
+                for (let i = 0; i < 12; i++) {
+                    let monthTotal = 0;
+                    staffNames.forEach(n => { monthTotal += msc[n][i]; });
+                    if (monthTotal > maxMonthTotal) maxMonthTotal = monthTotal;
+                }
+
+                html += '<div class="dash-row" style="grid-template-columns: 1fr;">';
+                html += '<div class="dash-panel">';
+                html += '<div class="dash-panel-title">Staff Assisted Sessions</div>';
+                html += '<div class="dash-stacked-chart">';
+                for (let i = 0; i < 12; i++) {
+                    let monthTotal = 0;
+                    staffNames.forEach(n => { monthTotal += msc[n][i]; });
+                    const barPct = maxMonthTotal > 0 ? (monthTotal / maxMonthTotal) * 100 : 0;
+
+                    html += '<div class="dash-stacked-col">';
+                    const hlMonth = monthTotal > 0 && monthTotal === maxMonthTotal ? ' dash-highlight' : '';
+                    html += '  <div class="dash-stacked-count' + hlMonth + '">' + (monthTotal > 0 ? monthTotal : '') + '</div>';
+                    html += '  <div class="dash-stacked-bar" style="height:' + Math.max(barPct, monthTotal > 0 ? 2 : 0) + '%;">';
+                    if (monthTotal > 0) {
+                        // Build segments bottom-up
+                        staffNames.forEach((n, si) => {
+                            const count = msc[n][i];
+                            if (count === 0) return;
+                            const segPct = (count / monthTotal) * 100;
+                            const color = STAFF_COLORS[si % STAFF_COLORS.length];
+                            const isTop = si === staffNames.reduce((last, name, idx) => msc[name][i] > 0 ? idx : last, 0);
+                            html += '<div class="dash-stacked-segment' + (isTop ? ' dash-stacked-segment-top' : '') + '" style="height:' + segPct + '%;background:' + color + ';" title="' + n + ': ' + count + '"></div>';
+                        });
+                    }
+                    html += '  </div>';
+                    html += '  <div class="dash-stacked-label' + hlMonth + '">' + MONTHS[i] + '</div>';
+                    html += '</div>';
+                }
+                html += '</div>';
+
+                // Legend
+                const maxStaffTotal = Math.max(...staffNames.map(n => msc[n].reduce((s, c) => s + c, 0)));
+                html += '<div class="dash-stacked-legend">';
+                staffNames.forEach((n, si) => {
+                    const total = msc[n].reduce((s, c) => s + c, 0);
+                    const color = STAFF_COLORS[si % STAFF_COLORS.length];
+                    const hl = total === maxStaffTotal ? ' dash-highlight' : '';
+                    html += '<div class="dash-ring-legend-item' + hl + '"><span class="dash-ring-dot" style="background:' + color + ';"></span> ' + n + ': ' + total + '</div>';
+                });
+                html += '</div>';
+
+                html += '</div>'; // end panel
+                html += '</div>'; // end row
+            }
+        }
 
         // === ROW 3: Weekly Rhythm (full width) ===
         html += '<div class="dash-row" style="grid-template-columns: 1fr;">';
@@ -4709,11 +5320,21 @@ const firebaseConfig = {
             for (let h = minH; h <= maxH; h++) allHeatHours.push(h);
 
             const DAY_ABBR = ['Sun', 'Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat'];
+            // Pre-compute hour totals for highlighting
+            const hourTotals = {};
+            let maxHourTotal = 0;
+            allHeatHours.forEach(h => {
+                let total = 0;
+                for (let d = 0; d < 7; d++) total += (heatmap[d] || {})[h] || 0;
+                hourTotals[h] = total;
+                if (total > maxHourTotal) maxHourTotal = total;
+            });
             html += '<div class="dash-heatmap" style="grid-template-columns: 36px repeat(' + allHeatHours.length + ', 1fr);">';
             // Header row
             html += '<div class="dash-hm-corner"></div>';
             allHeatHours.forEach(h => {
-                html += '<div class="dash-hm-hdr">' + formatTime(h) + '</div>';
+                const hl = hourTotals[h] > 0 && hourTotals[h] === maxHourTotal ? ' dash-highlight' : '';
+                html += '<div class="dash-hm-hdr' + hl + '">' + formatTime(h) + '</div>';
             });
             // Data rows
             for (let d = 0; d < 7; d++) {
@@ -4736,6 +5357,13 @@ const firebaseConfig = {
                     html += '<div class="dash-hm-cell dash-hm-lvl-' + intensity + '" title="' + title + '">' + (count > 0 ? count : '') + '</div>';
                 });
             }
+            // Totals row
+            html += '<div class="dash-hm-day" style="font-weight:600;">Total</div>';
+            allHeatHours.forEach(h => {
+                const total = hourTotals[h];
+                const hl = total > 0 && total === maxHourTotal ? ' dash-highlight' : '';
+                html += '<div class="dash-hm-cell' + hl + '" style="background:transparent;border:none;color:#666;" title="Total at ' + formatTime(h) + ': ' + total + '">' + (total > 0 ? total : '') + '</div>';
+            });
             html += '</div>';
             // Heatmap scale legend
             html += '<div class="dash-hm-scale">';
@@ -4816,7 +5444,8 @@ const firebaseConfig = {
         const durationBuckets = {}; // { '0.5': 3, '1': 8, ... }
         const dayHourHeatmap = Array.from({length: 7}, () => ({})); // [day][hour] = count
         const subRoomCounts = {}; // { '0': 12, '1': 8, ... }
-        
+        const monthlyStaffCounts = {}; // { 'John Smith': [0,0,3,...] } per-month counts
+
         // Analyze individual bookings for count, duration, peak hour, staff
         const resPrefix = res.id + '_';
         Object.keys(bookings).forEach(key => {
@@ -4845,7 +5474,12 @@ const firebaseConfig = {
             hourSlotCounts[hourKey] = (hourSlotCounts[hourKey] || 0) + 1;
             
             // Track staff assistance
-            if (booking.hasStaff) staffAssistedCount++;
+            if (booking.hasStaff) {
+                staffAssistedCount++;
+                const staffKey = normalizeStaffName(booking.staffName);
+                if (!monthlyStaffCounts[staffKey]) monthlyStaffCounts[staffKey] = new Array(12).fill(0);
+                monthlyStaffCounts[staffKey][bookingDate.getMonth()]++;
+            }
             
             // Duration distribution
             const durKey = dur.toString();
@@ -5058,7 +5692,8 @@ const firebaseConfig = {
             hourlyDist,
             durationBuckets,
             dayHourHeatmap,
-            subRoomCounts
+            subRoomCounts,
+            monthlyStaffCounts
         };
 
         // Render dashboard (must come after statsData is populated)
@@ -5113,7 +5748,20 @@ const firebaseConfig = {
             csv += `${h.hour},${h.bookings}\n`;
         });
         
-        // Section 5: Daily Breakdown
+        // Section 5: Staff Assistance by Month (conditional)
+        const msc = statsData.monthlyStaffCounts || {};
+        const staffCsvNames = Object.keys(msc).sort();
+        if (staffCsvNames.length > 0) {
+            csv += '\nSTAFF ASSISTANCE BY MONTH (YTD)\n';
+            csv += 'Staff Name,' + MONTHS.join(',') + ',Total\n';
+            staffCsvNames.forEach(name => {
+                const counts = msc[name];
+                const total = counts.reduce((s, c) => s + c, 0);
+                csv += name + ',' + counts.join(',') + ',' + total + '\n';
+            });
+        }
+
+        // Section 6: Daily Breakdown
         csv += '\nDAILY BREAKDOWN\n';
         csv += 'Day,' + MONTHS.join(',') + ',Total\n';
         
