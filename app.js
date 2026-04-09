@@ -120,6 +120,7 @@ const firebaseConfig = {
         useQuarterHour: false
     };
     let resizeJustEnded = false;
+    let selectionJustEnded = false;
 
     function init() {
         const d = new Date();
@@ -636,6 +637,7 @@ const firebaseConfig = {
                             slot.onclick = (e) => {
                                 if (selectionState.active) return;
                                 if (resizeJustEnded) return;
+                                if (selectionJustEnded) return;
 
                                 // For quarter-hour mode, check if clicked quarter is available
                                 const offset = getQuarterHourOffset(e, slot, res);
@@ -786,6 +788,7 @@ const firebaseConfig = {
                 bookingEl.onclick = (e) => {
                     if (e.target.classList.contains('resize-handle')) return;
                     if (resizeJustEnded) return;
+                    if (selectionJustEnded) return;
                     hideBookingPopover();
                     if (rescheduleMode.active) {
                         if (booking.id === rescheduleMode.sourceId) {
@@ -1722,17 +1725,14 @@ const firebaseConfig = {
         const slotsCovered = currentSlotIndex - startIdx + 1;
         let baseDuration = slotsCovered * 0.5;
 
-        // For quarter-hour mode, add finer granularity based on mouse position within current slot
+        // For quarter-hour mode, compute duration from start offset to mouse position within current slot.
+        // Formula: fully covered intermediate slots + partial coverage of the current (last) slot - start offset.
         if (useQuarter && positions[currentSlotIndex]) {
             const currentSlotRect = positions[currentSlotIndex];
             const relativeY = e.clientY - currentSlotRect.top;
             const inBottomHalf = relativeY >= currentSlotRect.height / 2;
 
-            // Adjust duration: subtract initial offset, add current position offset
-            baseDuration = baseDuration - selectionState.quarterOffset;
-            if (inBottomHalf) {
-                baseDuration += 0.25;
-            }
+            baseDuration = (slotsCovered - 1) * 0.5 + (inBottomHalf ? 0.5 : 0.25) - selectionState.quarterOffset;
         }
 
         let newDuration = Math.max(minDuration, Math.min(selectionState.maxDuration, baseDuration));
@@ -1768,10 +1768,14 @@ const firebaseConfig = {
     
     function endSelection(e) {
         if (!selectionState.active) return;
-        
+
         document.removeEventListener('mousemove', doSelection);
         document.removeEventListener('mouseup', endSelection);
         document.body.classList.remove('is-dragging');
+
+        // Prevent the subsequent click event from reopening the modal via the slot onclick handler
+        selectionJustEnded = true;
+        setTimeout(() => { selectionJustEnded = false; }, 100);
         
         if (selectionState.overlayElement) {
             selectionState.overlayElement.remove();
