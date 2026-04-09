@@ -1033,15 +1033,29 @@ const firebaseConfig = {
                 dragState.highlightElement = null;
             }
 
-            // Add half-highlight class
+            // Add half-highlight class (background tint on the slot)
             if (quarterOffset > 0) {
                 slot.classList.add('quarter-hover-bottom');
             } else {
                 slot.classList.add('quarter-hover-top');
             }
 
-            // Create floating tooltip
+            // Create highlight element with border over just the target quarter
             const rect = slot.getBoundingClientRect();
+            const padding = 2;
+            const halfHeight = (rect.height / 2) - padding - 1;
+            const quarterTop = quarterOffset > 0 ? rect.top + rect.height / 2 + padding : rect.top + padding;
+
+            const highlight = document.createElement('div');
+            highlight.className = 'drag-slot-highlight';
+            highlight.style.left = (rect.left + padding) + 'px';
+            highlight.style.top = quarterTop + 'px';
+            highlight.style.width = (rect.width - padding * 2 - 1) + 'px';
+            highlight.style.height = Math.max(halfHeight, 10) + 'px';
+            document.body.appendChild(highlight);
+            dragState.highlightElement = highlight;
+
+            // Create floating tooltip
             const tooltip = document.createElement('div');
             tooltip.className = 'drag-tooltip';
             const dragDayEnd = res.hours[(parseInt(dayIndex) * 2) + 1];
@@ -1072,11 +1086,13 @@ const firebaseConfig = {
             e.dataTransfer.dropEffect = 'move';
             dragState.lastInvalidReason = null;
             dragState.wasOverValidTarget = true;
+            if (dragState.highlightElement) dragState.highlightElement.classList.remove('invalid');
         } else {
             slot.classList.add('drag-over-invalid');
             e.dataTransfer.dropEffect = 'none';
             dragState.lastInvalidReason = validation.reason;
             dragState.wasOverValidTarget = false;
+            if (dragState.highlightElement) dragState.highlightElement.classList.add('invalid');
         }
     }
 

@@ -574,15 +574,19 @@ textarea { resize: vertical; }
 }
 .slot.drag-over-valid.quarter-hover-top {
     background: linear-gradient(to bottom, rgba(39, 174, 96, 0.3) 50%, transparent 50%) !important;
+    box-shadow: none;
 }
 .slot.drag-over-valid.quarter-hover-bottom {
     background: linear-gradient(to bottom, transparent 50%, rgba(39, 174, 96, 0.3) 50%) !important;
+    box-shadow: none;
 }
 .slot.row-alt.drag-over-valid.quarter-hover-top {
     background: linear-gradient(to bottom, rgba(39, 174, 96, 0.3) 50%, #f0f0f0 50%) !important;
+    box-shadow: none;
 }
 .slot.row-alt.drag-over-valid.quarter-hover-bottom {
     background: linear-gradient(to bottom, #f0f0f0 50%, rgba(39, 174, 96, 0.3) 50%) !important;
+    box-shadow: none;
 }
 .slot.drag-over-invalid { 
     background: rgba(192, 57, 43, 0.3) !important; 
@@ -590,15 +594,19 @@ textarea { resize: vertical; }
 }
 .slot.drag-over-invalid.quarter-hover-top {
     background: linear-gradient(to bottom, rgba(192, 57, 43, 0.3) 50%, transparent 50%) !important;
+    box-shadow: none;
 }
 .slot.drag-over-invalid.quarter-hover-bottom {
     background: linear-gradient(to bottom, transparent 50%, rgba(192, 57, 43, 0.3) 50%) !important;
+    box-shadow: none;
 }
 .slot.row-alt.drag-over-invalid.quarter-hover-top {
     background: linear-gradient(to bottom, rgba(192, 57, 43, 0.3) 50%, #f0f0f0 50%) !important;
+    box-shadow: none;
 }
 .slot.row-alt.drag-over-invalid.quarter-hover-bottom {
     background: linear-gradient(to bottom, #f0f0f0 50%, rgba(192, 57, 43, 0.3) 50%) !important;
+    box-shadow: none;
 }
 /* Keep tooltip visible during drag on empty slots */
 .slot:not(.has-booking).drag-over-valid::after,
