@@ -593,6 +593,10 @@ const firebaseConfig = {
                                 if (quarterBlocked) {
                                     slot.classList.remove('quarter-hover-top', 'quarter-hover-bottom', 'drag-over-valid', 'drag-over-invalid');
                                     slot.setAttribute('data-time', '');
+                                    if (rescheduleMode.highlightElement) {
+                                        rescheduleMode.highlightElement.remove();
+                                        rescheduleMode.highlightElement = null;
+                                    }
                                 } else {
                                     slot.setAttribute('data-time', `${formatTime(adjustedStart)} - ${formatCosmeticTime(adjustedStart + 0.5, dayEnd, slotCosmeticMin)}`);
                                     // Update half-highlight
@@ -603,18 +607,39 @@ const firebaseConfig = {
                                         slot.classList.remove('quarter-hover-bottom');
                                         slot.classList.add('quarter-hover-top');
                                     }
-                                    // Reschedule mode: show valid/invalid feedback
+                                    // Reschedule mode: show valid/invalid feedback with quarter-sized highlight
                                     if (rescheduleMode.active) {
                                         let testSlotId = `${res.id}_${activeWeekKey}_${col.dayIndex}_${adjustedStart}`;
                                         if (col.subIndex !== null) testSlotId += `_${col.subIndex}`;
                                         const rv = validateRescheduleTarget(testSlotId);
                                         slot.classList.remove('drag-over-valid', 'drag-over-invalid');
                                         slot.classList.add(rv.valid ? 'drag-over-valid' : 'drag-over-invalid');
+
+                                        // Create/update highlight element for quarter-sized border
+                                        if (!rescheduleMode.highlightElement) {
+                                            const hl = document.createElement('div');
+                                            hl.className = 'drag-slot-highlight';
+                                            document.body.appendChild(hl);
+                                            rescheduleMode.highlightElement = hl;
+                                        }
+                                        const slotRect = slot.getBoundingClientRect();
+                                        const pad = 2;
+                                        const halfH = (slotRect.height / 2) - pad - 1;
+                                        const hlTop = offset > 0 ? slotRect.top + slotRect.height / 2 + pad : slotRect.top + pad;
+                                        rescheduleMode.highlightElement.style.left = (slotRect.left + pad) + 'px';
+                                        rescheduleMode.highlightElement.style.top = hlTop + 'px';
+                                        rescheduleMode.highlightElement.style.width = (slotRect.width - pad * 2 - 1) + 'px';
+                                        rescheduleMode.highlightElement.style.height = Math.max(halfH, 10) + 'px';
+                                        rescheduleMode.highlightElement.classList.toggle('invalid', !rv.valid);
                                     }
                                 }
                             };
                             slot.onmouseleave = () => {
                                 slot.classList.remove('quarter-hover-top', 'quarter-hover-bottom', 'drag-over-valid', 'drag-over-invalid');
+                                if (rescheduleMode.highlightElement) {
+                                    rescheduleMode.highlightElement.remove();
+                                    rescheduleMode.highlightElement = null;
+                                }
                             };
                         } else {
                             // Standard mode: reschedule hover feedback
@@ -2348,6 +2373,10 @@ const firebaseConfig = {
         rescheduleMode.sourceStartTime = null;
         rescheduleMode.sourceSubIdx = null;
         rescheduleMode.sourceResourceId = null;
+        if (rescheduleMode.highlightElement) {
+            rescheduleMode.highlightElement.remove();
+            rescheduleMode.highlightElement = null;
+        }
 
         document.getElementById('rescheduleBanner').classList.add('hidden');
         
@@ -2377,6 +2406,12 @@ const firebaseConfig = {
 
     function handleRescheduleSlotClick(slotId, subIdx) {
         if (!rescheduleMode.active) return false;
+
+        // Clean up quarter-hour highlight
+        if (rescheduleMode.highlightElement) {
+            rescheduleMode.highlightElement.remove();
+            rescheduleMode.highlightElement = null;
+        }
 
         const res = resources.find(r => r.id === currentResId);
         const prefix = res.id + "_";
