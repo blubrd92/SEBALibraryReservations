@@ -598,7 +598,7 @@ const firebaseConfig = {
                                         rescheduleMode.highlightElement = null;
                                     }
                                 } else {
-                                    slot.setAttribute('data-time', `${formatTime(adjustedStart)} - ${formatCosmeticTime(adjustedStart + 0.5, dayEnd, slotCosmeticMin)}`);
+                                    slot.setAttribute('data-time', `${formatTime(adjustedStart)} - ${formatCosmeticTime(adjustedStart + 0.25, dayEnd, slotCosmeticMin)}`);
                                     // Update half-highlight
                                     if (offset > 0) {
                                         slot.classList.remove('quarter-hover-top');
