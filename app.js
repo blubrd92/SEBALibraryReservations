@@ -573,9 +573,14 @@ const firebaseConfig = {
 
                         const canEdit = canEditResource(res);
 
-                        // Always show time tooltip on hover
+                        // Show time tooltip on hover. In quarter-hour mode we intentionally
+                        // skip the static value here because the correct range depends on
+                        // which half the cursor is over; the onmousemove handler below
+                        // populates data-time on demand for each quarter.
                         const slotCosmeticMin = res.cosmeticCloseMinutes || 0;
-                        slot.setAttribute('data-time', `${displayTime} - ${formatCosmeticTime(timeVal + 0.5, dayEnd, slotCosmeticMin)}`);
+                        if (!res.useQuarterHour) {
+                            slot.setAttribute('data-time', `${displayTime} - ${formatCosmeticTime(timeVal + 0.5, dayEnd, slotCosmeticMin)}`);
+                        }
 
                         // For quarter-hour mode, update tooltip and highlight dynamically
                         if (res.useQuarterHour) {
