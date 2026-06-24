@@ -3354,11 +3354,13 @@ const firebaseConfig = {
 
     // Temporary working copy of sub-rooms for settings editing
     let editingSubRooms = [];
+    let editingSubRoomIdx = null; // array index of the sub-room currently in name-edit mode
 
     function renderSubRoomCards(res) {
-        editingSubRooms = Array.isArray(res.subRooms) 
-            ? res.subRooms.map(sr => ({ ...sr })) 
+        editingSubRooms = Array.isArray(res.subRooms)
+            ? res.subRooms.map(sr => ({ ...sr }))
             : [];
+        editingSubRoomIdx = null;
         drawSubRoomCards();
     }
 
@@ -3377,16 +3379,27 @@ const firebaseConfig = {
         const active = sorted.filter(sr => sr.active !== false);
         const inactive = sorted.filter(sr => sr.active === false);
 
-        // Render active cards
+        // Render active cards. By default the name is static text with an Edit
+        // button (like the volunteer-name list); clicking Edit swaps that one card
+        // into an input with Save/Cancel.
         let html = active.map(sr => {
-            return `<div class="subroom-card" data-idx="${sr._idx}" draggable="true">
-                <div style="display:flex; align-items:center; gap:8px; flex:1;">
-                    <span class="subroom-drag-handle" title="Drag to reorder">☰</span>
-                    <input type="text" class="subroom-name-input" value="${escapeHtml(sr.name)}" 
-                        onchange="updateSubRoomName(${sr._idx}, this.value)" 
+            if (sr._idx === editingSubRoomIdx) {
+                return `<div class="subroom-card" data-idx="${sr._idx}">
+                    <span class="subroom-drag-handle" style="color:#ddd; cursor:default;" title="Finish editing to reorder">☰</span>
+                    <input type="text" class="subroom-name-input" id="subRoomEditInput_${sr._idx}" value="${escapeHtml(sr.name)}"
+                        onkeydown="if(event.key==='Enter'){event.preventDefault();saveSubRoomEdit(${sr._idx});}else if(event.key==='Escape'){cancelSubRoomEdit();}"
                         placeholder="Room name">
-                </div>
+                    <div style="display:flex; align-items:center; gap:4px;">
+                        <button type="button" class="btn-success" onclick="saveSubRoomEdit(${sr._idx})" style="padding:4px 8px; font-size:0.8em;">Save</button>
+                        <button type="button" onclick="cancelSubRoomEdit()" style="padding:4px 8px; font-size:0.8em;">Cancel</button>
+                    </div>
+                </div>`;
+            }
+            return `<div class="subroom-card" data-idx="${sr._idx}" draggable="true">
+                <span class="subroom-drag-handle" title="Drag to reorder">☰</span>
+                <span style="flex:1; font-size:0.9em; overflow:hidden; text-overflow:ellipsis; white-space:nowrap;">${escapeHtml(sr.name)}</span>
                 <div style="display:flex; align-items:center; gap:4px;">
+                    <button type="button" onclick="editSubRoom(${sr._idx})" style="padding:4px 8px; font-size:0.8em;">Edit</button>
                     <button type="button" onclick="deactivateSubRoom(${sr._idx})" class="btn-danger" style="padding:4px 8px; font-size:0.8em;">Deactivate</button>
                 </div>
             </div>`;
@@ -3552,8 +3565,8 @@ const firebaseConfig = {
     }
 
     function addSubRoom() {
-        const nextOrder = editingSubRooms.length > 0 
-            ? Math.max(...editingSubRooms.map(sr => sr.displayOrder ?? 0)) + 1 
+        const nextOrder = editingSubRooms.length > 0
+            ? Math.max(...editingSubRooms.map(sr => sr.displayOrder ?? 0)) + 1
             : 0;
         editingSubRooms.push({
             id: 'sr-' + Date.now().toString(36) + Math.random().toString(36).substr(2, 4),
@@ -3561,16 +3574,32 @@ const firebaseConfig = {
             active: true,
             displayOrder: nextOrder
         });
-        drawSubRoomCards();
-        // Focus the new input
-        setTimeout(() => {
-            const inputs = document.querySelectorAll('.subroom-name-input');
-            if (inputs.length > 0) inputs[inputs.length - 1].focus();
-        }, 50);
+        // Open the new sub-room directly in edit mode so its name can be set.
+        editSubRoom(editingSubRooms.length - 1);
     }
 
-    function updateSubRoomName(idx, newName) {
-        if (editingSubRooms[idx]) editingSubRooms[idx].name = newName.trim() || 'Unnamed';
+    function editSubRoom(idx) {
+        if (!editingSubRooms[idx]) return;
+        editingSubRoomIdx = idx;
+        drawSubRoomCards();
+        setTimeout(() => {
+            const input = document.getElementById('subRoomEditInput_' + idx);
+            if (input) { input.focus(); input.select(); }
+        }, 30);
+    }
+
+    function saveSubRoomEdit(idx) {
+        const input = document.getElementById('subRoomEditInput_' + idx);
+        if (input && editingSubRooms[idx]) {
+            editingSubRooms[idx].name = input.value.trim() || 'Unnamed';
+        }
+        editingSubRoomIdx = null;
+        drawSubRoomCards();
+    }
+
+    function cancelSubRoomEdit() {
+        editingSubRoomIdx = null;
+        drawSubRoomCards();
     }
 
     function deactivateSubRoom(idx) {
@@ -4130,6 +4159,7 @@ const firebaseConfig = {
         const editId = document.getElementById('settingResSelect').value;
         const r = resources.find(x => x.id === editId);
         if (!r || !Array.isArray(r.staffNames) || idx < 0 || idx >= r.staffNames.length) return;
+        if (!confirm(`Remove "${r.staffNames[idx]}" from the volunteer list?`)) return;
         r.staffNames.splice(idx, 1);
         cancelStaffNameEdit();
         renderStaffNameList();
