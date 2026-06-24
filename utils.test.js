@@ -22,7 +22,9 @@ const {
     checkTimeConflict,
     formatCosmeticTime,
     getCurrentTimeFloat,
-    normalizeStaffName
+    normalizeStaffName,
+    classifyResourceSnapshot,
+    shouldPersistResourceList
 } = require('./utils');
 
 // ============================================================
@@ -797,5 +799,73 @@ describe('normalizeStaffName', () => {
 
     test('handles single word', () => {
         expect(normalizeStaffName('alice')).toBe('Alice');
+    });
+});
+
+// ============================================================
+// classifyResourceSnapshot
+// ============================================================
+
+describe('classifyResourceSnapshot', () => {
+    test('non-empty list loads normally (never loaded before)', () => {
+        expect(classifyResourceSnapshot([{ id: 'a' }], false)).toBe('load');
+    });
+
+    test('non-empty list loads normally (already loaded before)', () => {
+        expect(classifyResourceSnapshot([{ id: 'a' }], true)).toBe('load');
+    });
+
+    test('empty list after data has loaded is a fault', () => {
+        expect(classifyResourceSnapshot([], true)).toBe('fault');
+    });
+
+    test('empty list before anything loads is a genuine first run', () => {
+        expect(classifyResourceSnapshot([], false)).toBe('first-run');
+    });
+
+    test('missing list (undefined) after load is a fault, not a reset', () => {
+        expect(classifyResourceSnapshot(undefined, true)).toBe('fault');
+    });
+
+    test('missing list (undefined) on first run is first-run', () => {
+        expect(classifyResourceSnapshot(undefined, false)).toBe('first-run');
+    });
+
+    test('null list after load is a fault', () => {
+        expect(classifyResourceSnapshot(null, true)).toBe('fault');
+    });
+
+    test('malformed list (non-array) after load is a fault', () => {
+        expect(classifyResourceSnapshot('oops', true)).toBe('fault');
+        expect(classifyResourceSnapshot({ list: [] }, true)).toBe('fault');
+    });
+});
+
+// ============================================================
+// shouldPersistResourceList
+// ============================================================
+
+describe('shouldPersistResourceList', () => {
+    test('allows writing a normal non-empty list', () => {
+        expect(shouldPersistResourceList([{ id: 'a' }], true)).toBe(true);
+        expect(shouldPersistResourceList([{ id: 'a' }], false)).toBe(true);
+    });
+
+    test('blocks an empty write once real resources have loaded', () => {
+        expect(shouldPersistResourceList([], true)).toBe(false);
+    });
+
+    test('allows an empty write before anything has loaded (true first run)', () => {
+        expect(shouldPersistResourceList([], false)).toBe(true);
+    });
+
+    test('allows an empty write when explicitly permitted', () => {
+        expect(shouldPersistResourceList([], true, true)).toBe(true);
+    });
+
+    test('blocks non-array values regardless of state', () => {
+        expect(shouldPersistResourceList(undefined, false)).toBe(false);
+        expect(shouldPersistResourceList(null, true)).toBe(false);
+        expect(shouldPersistResourceList('oops', false)).toBe(false);
     });
 });

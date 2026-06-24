@@ -458,6 +458,51 @@ function normalizeStaffName(name) {
 }
 
 // ============================================================
+// RESOURCE LIST PERSISTENCE SAFEGUARDS
+// ============================================================
+
+/**
+ * Classify a resource-list snapshot to decide how the app should react.
+ *
+ * The whole resource list lives in a single Firestore document, and every write
+ * fully overwrites it. To stop a transiently missing/empty document from
+ * silently wiping real configuration, the realtime listener routes snapshots
+ * through this classifier:
+ *
+ *   - 'load'      → a non-empty list is present; load it normally.
+ *   - 'fault'     → the list is empty/missing BUT real resources already loaded
+ *                   this session, so this is almost certainly a fault (deleted
+ *                   doc, permission blip, malformed data). Do NOT overwrite —
+ *                   keep what we have and warn.
+ *   - 'first-run' → empty/missing and nothing has ever loaded: a genuinely empty
+ *                   database. Safe to start fresh.
+ *
+ * @param {*} list - The `list` field from the snapshot (any type).
+ * @param {boolean} everLoaded - Whether a non-empty list has loaded before.
+ * @returns {'load'|'fault'|'first-run'}
+ */
+function classifyResourceSnapshot(list, everLoaded) {
+    if (Array.isArray(list) && list.length > 0) return 'load';
+    return everLoaded ? 'fault' : 'first-run';
+}
+
+/**
+ * Guard for persisting the resource list. Returns false when a write would be
+ * destructive — an empty list while real resources have already loaded — unless
+ * explicitly allowed (e.g. an intentional reset).
+ *
+ * @param {*} list - The list about to be written.
+ * @param {boolean} everLoaded - Whether a non-empty list has loaded before.
+ * @param {boolean} [allowEmpty=false] - Permit an intentional empty write.
+ * @returns {boolean} True if the write is safe to perform.
+ */
+function shouldPersistResourceList(list, everLoaded, allowEmpty = false) {
+    if (!Array.isArray(list)) return false;
+    if (list.length === 0 && everLoaded && !allowEmpty) return false;
+    return true;
+}
+
+// ============================================================
 // MODULE EXPORT (Node.js / Jest) — no-op in the browser
 // ============================================================
 
@@ -486,6 +531,8 @@ if (typeof module !== 'undefined' && module.exports) {
         checkTimeConflict,
         formatCosmeticTime,
         getCurrentTimeFloat,
-        normalizeStaffName
+        normalizeStaffName,
+        classifyResourceSnapshot,
+        shouldPersistResourceList
     };
 }

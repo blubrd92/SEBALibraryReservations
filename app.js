@@ -193,22 +193,57 @@ const firebaseConfig = {
     }
 
     let hasCheckedJanitor = false;
+    // True once a non-empty resource list has loaded this session. Lets us tell a
+    // genuinely empty database apart from a fault (deleted / empty / malformed
+    // document) so the latter can never silently overwrite real configuration.
+    let resourcesEverLoaded = false;
+
+    /**
+     * Single chokepoint for persisting the resource list to Firestore. Routing
+     * every write through here means a destructive overwrite (an empty list after
+     * real data has loaded) is blocked in one place. Pass { allowEmpty: true } only
+     * for an intentional reset. Returns the Firestore promise, or a rejected promise
+     * when the safety guard blocks the write.
+     */
+    function saveResourceList(list, options = {}) {
+        if (!shouldPersistResourceList(list, resourcesEverLoaded, options.allowEmpty === true)) {
+            return Promise.reject(new Error("Refused to save an empty resource list (safety check)."));
+        }
+        return db.collection('system').doc('resources').set({ list });
+    }
 
     function setupRealtimeListeners() {
         db.collection('system').doc('resources').onSnapshot((doc) => {
-            if (doc.exists) {
-                resources = doc.data().list || [];
-                // Migrate legacy closureDates to closuresByYear
-                let needsSave = false;
-                resources.forEach(r => { if (migrateClosureDates(r)) needsSave = true; });
-                resources.forEach(r => { if (migrateSubRooms(r)) needsSave = true; });
-                if (needsSave) db.collection('system').doc('resources').set({ list: resources });
-            } else {
-                resources = [{ id: 'res-default', name: 'General Area', viewMode: 'week', hours: DEFAULT_HOURS, closuresByYear: {} }];
-                db.collection('system').doc('resources').set({ list: resources });
+            const rawList = doc.exists ? doc.data().list : null;
+
+            switch (classifyResourceSnapshot(rawList, resourcesEverLoaded)) {
+                case 'load': {
+                    resources = rawList;
+                    resourcesEverLoaded = true;
+                    // Migrate legacy closureDates to closuresByYear / subRooms shape.
+                    let needsSave = false;
+                    resources.forEach(r => { if (migrateClosureDates(r)) needsSave = true; });
+                    resources.forEach(r => { if (migrateSubRooms(r)) needsSave = true; });
+                    if (needsSave) saveResourceList(resources).catch(() => {});
+                    break;
+                }
+                case 'fault':
+                    // We had real resources and the document just came back
+                    // empty / missing / malformed. Do NOT overwrite, and do NOT
+                    // clobber the in-memory list — keep showing the last good copy.
+                    showToast("Resource list came back empty — keeping the last loaded copy and not overwriting. Check Firestore or restore from a backup.", "error");
+                    return;
+                case 'first-run':
+                    // Genuinely empty database (nothing has ever loaded). Show a
+                    // starter resource in memory for a usable grid, but do NOT
+                    // auto-write it — so a missing/empty document can never silently
+                    // overwrite data. It persists only when an admin first saves.
+                    resources = [{ id: 'res-default', name: 'General Area', viewMode: 'week', hours: [...DEFAULT_HOURS], closuresByYear: {} }];
+                    break;
             }
+
             handleResourceUpdate();
-            
+
             if (!hasCheckedJanitor) {
                 hasCheckedJanitor = true;
                 checkAndRunJanitor();
@@ -3884,7 +3919,7 @@ const firebaseConfig = {
         closeModal('applyClosuresModal');
         showLoading(true);
         try {
-            await db.collection('system').doc('resources').set({ list: resources });
+            await saveResourceList(resources);
             showToast(`${closures.length} closure(s) applied to ${applied} resource(s).`, "success");
         } catch (e) {
             showToast("Error: " + e.message, "error");
@@ -4057,7 +4092,7 @@ const firebaseConfig = {
         closeModal('applyStaffNamesModal');
         showLoading(true);
         try {
-            await db.collection('system').doc('resources').set({ list: resources });
+            await saveResourceList(resources);
             showToast(`${selectedNames.length} name(s) applied to ${applied} resource(s).`, "success");
         } catch (e) {
             showToast("Error: " + e.message, "error");
@@ -4118,7 +4153,7 @@ const firebaseConfig = {
         closeModal('applyHoursModal');
         showLoading(true);
         try {
-            await db.collection('system').doc('resources').set({ list: resources });
+            await saveResourceList(resources);
             showToast(`Operating hours applied to ${applied} resource(s).`, "success");
         } catch (e) {
             showToast("Error: " + e.message, "error");
@@ -4213,7 +4248,7 @@ const firebaseConfig = {
             try { 
                 pendingSelectionId = newRes.id;
                 pendingOpenSettings = true;
-                await db.collection('system').doc('resources').set({ list: [...resources, newRes] }); 
+                await saveResourceList([...resources, newRes]);
             } 
             catch (e) { showToast("Error: " + e.message, "error"); }
             showLoading(false);
@@ -4296,7 +4331,7 @@ const firebaseConfig = {
         }
         
         try { 
-            await db.collection('system').doc('resources').set({ list: [...resources, pendingNewResource] }); 
+            await saveResourceList([...resources, pendingNewResource]);
             if (importedItems.length > 0) {
                 showToast(`Resource created with imported ${importedItems.join(' and ')}!`, "success");
             }
@@ -4340,16 +4375,25 @@ const firebaseConfig = {
         
         const deleted = resources.find(r => r.id === delId);
         const remaining = resources.filter(r => r.id !== delId);
-        
+
+        // Refuse to delete the last resource: a library with zero resources can't be
+        // navigated or rebuilt through the UI, and an empty write is exactly what the
+        // safety guard blocks. Require at least one resource to remain.
+        if (remaining.length === 0) {
+            showLoading(false);
+            showToast("You can't delete the only resource. Create another one first.", "error");
+            return;
+        }
+
         // Set currentResId BEFORE Firebase write since onSnapshot fires during await
         if (currentResId === delId) {
-            currentResId = remaining.length > 0 ? remaining[0].id : null;
+            currentResId = remaining[0].id;
         }
-        
+
         try {
-            await db.collection('system').doc('resources').set({ list: remaining });
+            await saveResourceList(remaining);
             showToast(`"${deleted ? deleted.name : 'Resource'}" deleted.`, "success");
-        } 
+        }
         catch (e) { showToast("Error: " + e.message, "error"); }
         showLoading(false);
     }
@@ -4399,9 +4443,9 @@ const firebaseConfig = {
 
         for(let i=0; i<7; i++) { target.hours[i*2] = parseFloat(document.getElementById(`s_${i}`).value) || 0; target.hours[(i*2)+1] = parseFloat(document.getElementById(`e_${i}`).value) || 0; }
         showLoading(true);
-        try { 
-            await db.collection('system').doc('resources').set({ list: updatedList }); 
-            showToast("Settings Saved!", "success"); 
+        try {
+            await saveResourceList(updatedList);
+            showToast("Settings Saved!", "success");
             closeModal('settingsOverlay');
             
             // Run the lazy janitor in the background to scrub old bookings
