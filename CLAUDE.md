@@ -41,8 +41,9 @@ package.json                     - Dev dependencies (Jest only)
 
 - **Admin role:** email `staff@library.internal` - can edit all resources, access admin panel
 - **Staff/Viewer role:** email `viewer@library.internal` - can edit non-admin-only resources, no admin panel access
-- Both roles use the same shared password (`ADMIN_PASS` constant in app.js)
-- The admin panel has an additional password prompt, but it's the same password
+- Login uses a Firebase account password (set on the accounts in the Firebase console), not a value in the source.
+- The admin panel and delete-confirmation prompts are gated by the `ADMIN_PASS` constant in app.js — a **separate** client-side password from the login. This is a speed bump only: it ships in app.js and is readable in the browser.
+- **Real access control is enforced server-side by Firestore Security Rules** (`firestore.rules`), which require authentication for all access and block destructive writes to `system/resources` (an empty/missing list is rejected). Never rely on client-side checks alone for security.
 
 ### Firestore Data Model
 

@@ -1,0 +1,59 @@
+rules_version = '2';
+
+// Firestore Security Rules for the Library Reservations app.
+//
+// These rules are the ONLY server-enforced access control. Anything in the
+// client (app.js) — including the admin password — is downloaded by every
+// browser and cannot be trusted as a secret. The rules below:
+//
+//   1. Require an authenticated session for ALL reads and writes (no public /
+//      anonymous access to any data).
+//   2. Guard the single resource-catalog document against destructive
+//      overwrites at the database layer — a server-side mirror of the
+//      client-side safeguard — so the catalog can never be wiped or deleted,
+//      even by a buggy or bypassed client.
+//
+// Deploy with:  firebase deploy --only firestore:rules
+// (or paste this file into Firebase Console -> Firestore Database -> Rules)
+
+service cloud.firestore {
+  match /databases/{database}/documents {
+
+    // Every request must come from a signed-in session.
+    function isSignedIn() {
+      return request.auth != null;
+    }
+
+    // A write to system/resources must keep a non-empty resource list. This
+    // blocks the destructive case (emptying or deleting the catalog). On delete,
+    // request.resource is null, so this evaluates false and the delete is denied.
+    function resourceWriteIsSafe() {
+      return request.resource.data.list is list
+             && request.resource.data.list.size() > 0;
+    }
+
+    // The `system` collection holds the resource catalog (`resources`) plus the
+    // janitor checkpoint, stats metadata, and stats cache documents. All require
+    // auth; `resources` additionally requires the non-empty-list guard.
+    match /system/{docId} {
+      allow read: if isSignedIn();
+      allow write: if isSignedIn()
+                   && (docId != 'resources' || resourceWriteIsSafe());
+    }
+
+    // Bookings — one document per reservation. Authenticated staff create, edit,
+    // move, and delete these as part of normal use.
+    match /appointments/{bookingId} {
+      allow read, write: if isSignedIn();
+    }
+
+    // Everything else is denied by default (no matching rule = no access).
+    //
+    // NOTE: When you move to per-user accounts later, tighten the writes above to
+    // an admin allowlist, e.g.:
+    //   function isAdmin() {
+    //     return isSignedIn() && request.auth.token.email == 'staff@library.internal';
+    //   }
+    // and require isAdmin() for system/resources writes.
+  }
+}

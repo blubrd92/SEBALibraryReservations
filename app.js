@@ -16,7 +16,12 @@ const firebaseConfig = {
     const STAFF_EMAIL = "staff@library.internal"; 
     const VIEWER_EMAIL = "viewer@library.internal";
     let currentUserRole = null; // 'admin' or 'staff' 
-    const ADMIN_PASS = "library"; 
+    // Password for the in-app admin panel and delete-confirmation prompts. This is
+    // a client-side speed bump only (it ships in this file and is readable in the
+    // browser) — real access control is enforced by Firestore Security Rules. To
+    // change it, edit the string below. Note: this is SEPARATE from the Firebase
+    // login password, which is set on the accounts in the Firebase console.
+    const ADMIN_PASS = "cardcatalog";
 
     const DAYS = ['Sun', 'Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat'];
     const DEFAULT_HOURS = [0,0, 10,18, 10,20, 10,18, 10,18, 10,17, 10,17]; 
