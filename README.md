@@ -55,14 +55,16 @@ A web-based library resource reservation and scheduling system. Staff use it to 
 ## Project Structure
 
 ```
-app.js           (~5,950 lines)  - Application logic (DOM, Firebase, UI interactions)
-utils.js         (~490 lines)    - Pure utility functions (testable, no DOM/Firebase deps)
-utils.test.js    (~800 lines)    - Jest tests for utils.js (99 tests)
-index.html       (~710 lines)    - HTML markup, 13 modals, UI structure
-styles.css       (~1,275 lines)  - All styling, 5 color palettes
+app.js           (~6,300 lines)  - Application logic (DOM, Firebase, UI interactions)
+utils.js         (~540 lines)    - Pure utility functions (testable, no DOM/Firebase deps)
+utils.test.js    (~870 lines)    - Jest unit tests for utils.js
+index.html       (~720 lines)    - HTML markup, ~15 modal/overlay dialogs, UI structure
+styles.css       (~1,270 lines)  - All styling (layout, grid, modals, components)
 package.json                     - Dev dependencies (Jest only)
 CLAUDE.md                        - Detailed developer documentation
 ```
+
+(Line counts are approximate; run `wc -l` for current values. The color palettes are defined in `app.js` as the `COLOR_PALETTES` object, not in `styles.css`.)
 
 ## Getting Started
 
