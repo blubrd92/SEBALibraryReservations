@@ -233,8 +233,16 @@ body.is-dragging .slot::after {
 }
 
 /* Very tight blocks (e.g. 15-minute): a single line, vertically centered so it
-   stays legible in the thin block; clips at the right edge rather than wrapping. */
-.booking-float.is-compact { justify-content: center; }
+   stays legible in the thin block; clips at the right edge rather than wrapping.
+   The vertical padding is dropped and the line-height tightened because a 15-min
+   block is only ~11-16px tall — the normal 6px top/bottom padding would otherwise
+   consume the whole block and leave no room for the text. */
+.booking-float.is-compact {
+    justify-content: center;
+    padding-top: 0;
+    padding-bottom: 0;
+    line-height: 1.1;
+}
 .booking-float .slot-compact {
     display: block;
     width: 100%;
