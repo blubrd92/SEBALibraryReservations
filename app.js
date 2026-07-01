@@ -2960,33 +2960,11 @@ const firebaseConfig = {
         
         if (start + duration > dayEnd) return showToast("Exceeds closing time.", "error");
 
-        const end = start + duration;
-        let conflictFound = false;
-
-        Object.keys(allBookings).forEach(key => {
-            if (key === slotId) return;
-
-            const kSuffix = key.substring(prefix.length);
-            const kParts = kSuffix.split('_');
-            
-            if (!key.startsWith(prefix)) return; 
-
-            const kDay = parseInt(kParts[1]);
-            const kSub = kParts[3] ? parseInt(kParts[3]) : null;
-
-            if (kDay !== dayIdx) return;
-            if (kSub != subIdx) return; 
-
-            const bStart = parseFloat(kParts[2]);
-            const bDuration = allBookings[key].duration;
-            const bEnd = bStart + bDuration;
-
-            if (start < bEnd && end > bStart) {
-                conflictFound = true;
-            }
-        });
-
-        if (conflictFound) {
+        // Conflict check via the tested checkTimeConflict util (utils.js). It filters
+        // by resource, week, day, and normalized sub-room; the old inline loop here
+        // never compared the week key.
+        const conflict = checkTimeConflict(start, duration, dayIdx, subIdx, allBookings, res.id, weekKey, slotId);
+        if (conflict.hasConflict) {
             return showToast("Conflict: Time overlaps with another booking.", "error");
         }
         
@@ -3136,13 +3114,18 @@ const firebaseConfig = {
         // Query all needed weeks' bookings in parallel, reusing in-memory cache for current week
         const weekBookings = {};
         const currentWk = getWeekKey(currentWeekStart);
-        // Pre-seed from the active listener's cached data to avoid re-fetching current week
-        if (weekKeysNeeded.has(currentWk)) {
+        // Reuse the listener's cache only when it covers the whole current week.
+        // In day view the listener is narrowed to a single DAY, so treating that
+        // cache as full-week coverage would miss conflicts on the week's other days
+        // and let batch.set() below silently overwrite an existing booking that
+        // shares a slot ID. (activeQueryPrefix is the listener's actual range.)
+        const cacheIsFullWeek = activeQueryPrefix === `${res.id}_${currentWk}`;
+        if (cacheIsFullWeek && weekKeysNeeded.has(currentWk)) {
             Object.keys(allBookings).forEach(id => { weekBookings[id] = allBookings[id]; });
         }
         try {
             const queries = [...weekKeysNeeded]
-                .filter(wk => wk !== currentWk)
+                .filter(wk => !(cacheIsFullWeek && wk === currentWk))
                 .map(wk => {
                     const qPrefix = `${res.id}_${wk}`;
                     return db.collection('appointments')
@@ -3165,7 +3148,6 @@ const firebaseConfig = {
         const skipped = [];
         const toCreate = [];
         const seriesId = 'ser-' + Date.now();
-        const prefix = res.id + '_';
         
         for (const date of dates) {
             const weekKey = getWeekKey(date);
@@ -3198,28 +3180,19 @@ const firebaseConfig = {
                 continue;
             }
             
-            // Build slot ID
+            // Build slot ID. Sub-room index 0 is a legitimate value — don't treat
+            // it as falsy, or first-room series get IDs without the room suffix
+            // and become invisible in day view.
             let slotId = `${res.id}_${weekKey}_${dayIdx}_${startTime}`;
-            if (subIdx) slotId += `_${subIdx}`;
-            
-            // Check for time conflicts
-            const end = startTime + bookingData.duration;
-            let hasConflict = false;
-            Object.keys(weekBookings).forEach(key => {
-                if (key === slotId) return;
-                const kSuffix = key.substring(prefix.length);
-                const kParts = kSuffix.split('_');
-                const kDay = parseInt(kParts[1]);
-                const kSub = kParts[3] || null;
-                const checkSub = subIdx ? String(subIdx) : null;
-                if (kDay !== dayIdx) return;
-                if (kSub != checkSub) return;
-                const bStart = parseFloat(kParts[2]);
-                const bEnd = bStart + weekBookings[key].duration;
-                if (startTime < bEnd && end > bStart) hasConflict = true;
-            });
-            
-            if (hasConflict) {
+            if (subIdx !== null && subIdx !== undefined) slotId += `_${subIdx}`;
+
+            // Conflict check via the tested checkTimeConflict util. Crucially it
+            // filters by THIS occurrence's weekKey — weekBookings pools several
+            // weeks together, and the old inline loop compared only day/time/room,
+            // so one busy week falsely conflicted every occurrence in the series.
+            const conflict = checkTimeConflict(startTime, bookingData.duration, dayIdx, subIdx, weekBookings, res.id, weekKey, slotId);
+
+            if (conflict.hasConflict) {
                 skipped.push(dateStr + ' (time conflict)');
                 continue;
             }
