@@ -443,7 +443,11 @@ const firebaseConfig = {
 
         updateUIControls();
         loadBookingsForCurrentView();
-        if(document.getElementById('settingsOverlay').style.display !== 'none') loadSettingsForEditor();
+        // Refresh the open settings editor on remote updates — but not while it
+        // holds unsaved edits (reloading would re-init the working copies and
+        // silently discard them, e.g. right after "apply to other resources"
+        // saves the list). A dirty editor keeps its state; last save wins.
+        if(document.getElementById('settingsOverlay').style.display !== 'none' && !settingsIsDirty()) loadSettingsForEditor();
         
         if (pendingOpenSettings) {
             pendingOpenSettings = false;
@@ -3270,10 +3274,20 @@ const firebaseConfig = {
             `<span style="width:28px; height:28px; border-radius:4px; background:${p[2]};" title="Staff stripe"></span>`;
     }
 
+    // Working copies for the settings editor. Closures and staff names are edited
+    // here (like editingSubRooms) and only folded into the live resource on Save,
+    // so Cancel truly discards and the grid keeps rendering the saved state.
+    let editingClosures = {};
+    let editingStaffNames = [];
+    let settingsLoadedSnapshot = null; // dirty-detection baseline, set by loadSettingsForEditor
+    let settingsEditorResId = null;    // which resource the editor is showing
+
     function loadSettingsForEditor() {
         const editId = document.getElementById('settingResSelect').value;
         const r = resources.find(x => x.id === editId);
         if(!r) return;
+        editingClosures = JSON.parse(JSON.stringify(r.closuresByYear || {}));
+        editingStaffNames = (r.staffNames || []).slice();
         document.getElementById('editResName').value = r.name;
         document.getElementById('editMaxDuration').value = r.maxDuration;
         document.getElementById('editResOrientation').checked = r.hasStaffField || false;
@@ -3329,9 +3343,68 @@ const firebaseConfig = {
         
         // Load Closure Dates
         cancelClosureEdit();
-        renderClosureList(r);
+        renderClosureList();
+
+        // Baseline for dirty detection (must be captured after the form is built)
+        settingsEditorResId = editId;
+        settingsLoadedSnapshot = captureSettingsSnapshot();
     }
-    
+
+    // Serialize everything the settings form can change (form fields + the three
+    // working copies). Comparing against the snapshot taken at load time tells us
+    // whether the editor has unsaved changes.
+    function captureSettingsSnapshot() {
+        const hours = [];
+        for (let i = 0; i < 7; i++) {
+            const s = document.getElementById(`s_${i}`);
+            const e = document.getElementById(`e_${i}`);
+            hours.push(s ? s.value : '', e ? e.value : '');
+        }
+        return JSON.stringify({
+            name: document.getElementById('editResName').value,
+            maxDuration: document.getElementById('editMaxDuration').value,
+            hasStaffField: document.getElementById('editResOrientation').checked,
+            viewMode: document.getElementById('editViewMode').value,
+            defaultShowNotes: document.getElementById('editDefaultShowNotes').checked,
+            adminOnly: document.getElementById('editAdminOnly').checked,
+            anonymityBufferMonths: document.getElementById('editAnonymityBuffer').value,
+            allowRecurring: document.getElementById('editAllowRecurring').checked,
+            useQuarterHour: document.getElementById('editUseQuarterHour').checked,
+            enableSidebar: document.getElementById('editEnableSidebar').checked,
+            sidebarText: document.getElementById('editSidebarText').value,
+            advanceLimitEnabled: document.getElementById('editAdvanceLimitEnabled').checked,
+            advanceLimitDays: document.getElementById('editAdvanceLimitDays').value,
+            advanceLimitAdminBypass: document.getElementById('editAdvanceLimitAdminBypass').checked,
+            cosmeticCloseMinutes: document.getElementById('editCosmeticCloseMinutes').value,
+            colorPalette: document.getElementById('editColorPalette').value,
+            hours,
+            subRooms: readSubRoomCards(),
+            closures: editingClosures,
+            staffNames: editingStaffNames
+        });
+    }
+
+    function settingsIsDirty() {
+        return settingsLoadedSnapshot !== null && captureSettingsSnapshot() !== settingsLoadedSnapshot;
+    }
+
+    // Cancel button: warn before discarding unsaved edits. Closing simply drops
+    // the working copies; the next open re-initializes them from saved state.
+    function closeSettings() {
+        if (settingsIsDirty() && !confirm("Discard unsaved changes to this resource's settings?")) return;
+        closeModal('settingsOverlay');
+    }
+
+    // Resource dropdown: switching resources re-initializes the editor, so guard
+    // it the same way Cancel is guarded (and restore the selection if declined).
+    function handleSettingsResourceSwitch() {
+        if (settingsIsDirty() && !confirm("Discard unsaved changes to this resource's settings?")) {
+            document.getElementById('settingResSelect').value = settingsEditorResId;
+            return;
+        }
+        loadSettingsForEditor();
+    }
+
     function toggleSettingsSection(headerEl) {
         const isCollapsing = !headerEl.classList.contains("collapsed");
         headerEl.classList.toggle("collapsed");
@@ -3679,17 +3752,13 @@ const firebaseConfig = {
     }
 
     function editClosureDate(key) {
-        const editId = document.getElementById('settingResSelect').value;
-        const r = resources.find(x => x.id === editId);
-        if (!r || !r.closuresByYear) return;
-
         const parts = key.split('|');
         const startDate = parts[0];
         const endDate = parts[1] || null;
         const year = startDate.substring(0, 4);
-        if (!r.closuresByYear[year]) return;
+        if (!editingClosures[year]) return;
 
-        const closure = r.closuresByYear[year].find(c => {
+        const closure = editingClosures[year].find(c => {
             if (endDate) return c.date === startDate && c.endDate === endDate;
             return c.date === startDate && !c.endDate;
         });
@@ -3707,34 +3776,31 @@ const firebaseConfig = {
         document.getElementById('closureAddBtn').textContent = 'Update';
         document.getElementById('closureCancelEditLink').style.display = '';
     }
-    function renderClosureList(res) {
-        // If called without argument, get current resource
-        if (!res || typeof res !== 'object') {
-            const editId = document.getElementById('settingResSelect').value;
-            res = resources.find(x => x.id === editId);
-            if (!res) return;
-        }
-        
+    function renderClosureList(preferYear) {
+        // Renders from the editingClosures working copy (initialized per resource
+        // by loadSettingsForEditor); the saved resource is not touched until Save.
         // Populate year selector
         const yearSelect = document.getElementById('closureYearSelect');
         const currentSelectedYear = yearSelect.value;
         const currentYear = new Date().getFullYear();
         const years = new Set();
         years.add(String(currentYear));
-        if (res.closuresByYear) {
-            Object.keys(res.closuresByYear).forEach(y => years.add(y));
-        }
+        Object.keys(editingClosures).forEach(y => years.add(y));
         const sortedYears = [...years].sort();
-        yearSelect.innerHTML = sortedYears.map(y => 
+        yearSelect.innerHTML = sortedYears.map(y =>
             `<option value="${y}"${y === String(currentYear) ? ' selected' : ''}>${y}</option>`
         ).join('');
-        // Restore previous selection if it exists
-        if (currentSelectedYear && sortedYears.includes(currentSelectedYear)) {
+        // Prefer an explicitly requested year (e.g. the year a closure was just
+        // added to — it may not have existed as an option until this rebuild),
+        // otherwise keep the previous selection.
+        if (preferYear && sortedYears.includes(String(preferYear))) {
+            yearSelect.value = String(preferYear);
+        } else if (currentSelectedYear && sortedYears.includes(currentSelectedYear)) {
             yearSelect.value = currentSelectedYear;
         }
-        
+
         const selectedYear = yearSelect.value;
-        const closures = getClosuresForYear(res, selectedYear);
+        const closures = editingClosures[String(selectedYear)] || [];
         const container = document.getElementById('closureList');
         
         if (closures.length === 0) {
@@ -3801,12 +3867,9 @@ const firebaseConfig = {
         }
 
         const editId = document.getElementById('settingResSelect').value;
-        const r = resources.find(x => x.id === editId);
-        if (!r) return;
 
-        if (!r.closuresByYear) r.closuresByYear = {};
         const year = startDate.substring(0, 4);
-        if (!r.closuresByYear[year]) r.closuresByYear[year] = [];
+        if (!editingClosures[year]) editingClosures[year] = [];
 
         const newStart = startDate;
         const newEnd = endDate || startDate;
@@ -3819,19 +3882,19 @@ const firebaseConfig = {
             const oldStart = oldParts[0];
             const oldEnd = oldParts[1] || null;
             removedYear = oldStart.substring(0, 4);
-            if (r.closuresByYear[removedYear]) {
-                const idx = r.closuresByYear[removedYear].findIndex(c => {
+            if (editingClosures[removedYear]) {
+                const idx = editingClosures[removedYear].findIndex(c => {
                     if (oldEnd) return c.date === oldStart && c.endDate === oldEnd;
                     return c.date === oldStart && !c.endDate;
                 });
-                if (idx >= 0) removedEntry = r.closuresByYear[removedYear].splice(idx, 1)[0];
-                if (r.closuresByYear[removedYear].length === 0) delete r.closuresByYear[removedYear];
+                if (idx >= 0) removedEntry = editingClosures[removedYear].splice(idx, 1)[0];
+                if (editingClosures[removedYear].length === 0) delete editingClosures[removedYear];
             }
-            if (!r.closuresByYear[year]) r.closuresByYear[year] = [];
+            if (!editingClosures[year]) editingClosures[year] = [];
         }
 
         // Check for overlapping closures across all years
-        const allClosures = getAllClosures(r);
+        const allClosures = getAllClosures({ closuresByYear: editingClosures });
         const hasOverlap = allClosures.some(c => {
             const existingStart = c.date;
             const existingEnd = c.endDate || c.date;
@@ -3841,8 +3904,8 @@ const firebaseConfig = {
         if (hasOverlap) {
             // Restore old entry if editing
             if (removedEntry) {
-                if (!r.closuresByYear[removedYear]) r.closuresByYear[removedYear] = [];
-                r.closuresByYear[removedYear].push(removedEntry);
+                if (!editingClosures[removedYear]) editingClosures[removedYear] = [];
+                editingClosures[removedYear].push(removedEntry);
             }
             showToast("This date range overlaps with an existing closure.", "error");
             return;
@@ -3916,7 +3979,7 @@ const firebaseConfig = {
             closureEntry.endDate = endDate;
         }
 
-        r.closuresByYear[year].push(closureEntry);
+        editingClosures[year].push(closureEntry);
 
         // Reset form
         dateInput.value = '';
@@ -3929,37 +3992,32 @@ const firebaseConfig = {
         document.getElementById('closureAddBtn').textContent = 'Add';
         document.getElementById('closureCancelEditLink').style.display = 'none';
 
-        // Switch year selector to the year we just added to
-        document.getElementById('closureYearSelect').value = year;
-
-        renderClosureList(r);
+        // Show the year we just added to (renderClosureList rebuilds the options,
+        // so the year may not exist in the selector until then)
+        renderClosureList(year);
         showToast(wasEditing ? "Closure date updated. Remember to save changes." : "Closure date added. Remember to save changes.", "success");
     }
 
     function removeClosureDate(key) {
-        const editId = document.getElementById('settingResSelect').value;
-        const r = resources.find(x => x.id === editId);
-        if (!r || !r.closuresByYear) return;
-        
         const parts = key.split('|');
         const startDate = parts[0];
         const endDate = parts[1] || null;
         const year = startDate.substring(0, 4);
-        
-        if (!r.closuresByYear[year]) return;
-        
-        r.closuresByYear[year] = r.closuresByYear[year].filter(c => {
+
+        if (!editingClosures[year]) return;
+
+        editingClosures[year] = editingClosures[year].filter(c => {
             if (endDate) {
                 return !(c.date === startDate && c.endDate === endDate);
             } else {
                 return !(c.date === startDate && !c.endDate);
             }
         });
-        
+
         // Clean up empty year
-        if (r.closuresByYear[year].length === 0) delete r.closuresByYear[year];
-        
-        renderClosureList(r);
+        if (editingClosures[year].length === 0) delete editingClosures[year];
+
+        renderClosureList();
         showToast("Closure date removed. Remember to save changes.", "success");
     }
 
@@ -3969,7 +4027,8 @@ const firebaseConfig = {
         if (!sourceRes) return;
 
         const selectedYear = document.getElementById('closureYearSelect').value;
-        const closures = getClosuresForYear(sourceRes, selectedYear);
+        // Apply what the editor currently shows (the working copy)
+        const closures = editingClosures[String(selectedYear)] || [];
         if (closures.length === 0) {
             showToast(`No closure dates for ${selectedYear} to apply.`, "error");
             return;
@@ -4020,10 +4079,11 @@ const firebaseConfig = {
     }
     
     async function confirmApplyClosures() {
-        const editId = document.getElementById('settingResSelect').value;
-        const sourceRes = resources.find(x => x.id === editId);
         const selectedYear = document.getElementById('closureYearSelect').value;
-        const allClosures = getClosuresForYear(sourceRes, selectedYear);
+        // Source list is the editor's working copy (what the modal displayed).
+        // Targets are mutated and saved immediately — an explicit bulk action —
+        // but the source resource itself stays unsaved until Save Settings.
+        const allClosures = editingClosures[String(selectedYear)] || [];
 
         // Get selected closure keys
         const dateCheckboxes = document.querySelectorAll('input[name="applyClosureDate"]:checked');
@@ -4083,10 +4143,9 @@ const firebaseConfig = {
     }
 
     function renderStaffNameList() {
-        const editId = document.getElementById('settingResSelect').value;
-        const r = resources.find(x => x.id === editId);
-        if (!r) return;
-        const names = r.staffNames || [];
+        // Renders from the editingStaffNames working copy (initialized per
+        // resource by loadSettingsForEditor); saved on Save Settings only.
+        const names = editingStaffNames;
         const container = document.getElementById('staffNameList');
         if (names.length === 0) {
             container.innerHTML = '<div class="closure-empty">No staff names configured</div>';
@@ -4123,21 +4182,16 @@ const firebaseConfig = {
         const name = input.value.trim();
         if (!name) { showToast("Please enter a name.", "error"); return; }
 
-        const editId = document.getElementById('settingResSelect').value;
-        const r = resources.find(x => x.id === editId);
-        if (!r) return;
-        if (!r.staffNames) r.staffNames = [];
-
         // Check for duplicates (case-insensitive)
         const nameLower = name.toLowerCase();
-        const existingIdx = r.staffNames.findIndex(n => n.toLowerCase() === nameLower);
+        const existingIdx = editingStaffNames.findIndex(n => n.toLowerCase() === nameLower);
 
         if (editingStaffNameIdx !== null) {
             // Editing: check duplicate isn't a different entry
             if (existingIdx >= 0 && existingIdx !== editingStaffNameIdx) {
                 showToast("This name already exists.", "error"); return;
             }
-            r.staffNames[editingStaffNameIdx] = name;
+            editingStaffNames[editingStaffNameIdx] = name;
             editingStaffNameIdx = null;
             document.getElementById('staffNameAddBtn').textContent = 'Add';
             document.getElementById('staffNameCancelEditLink').style.display = 'none';
@@ -4146,7 +4200,7 @@ const firebaseConfig = {
             if (existingIdx >= 0) {
                 showToast("This name already exists.", "error"); return;
             }
-            r.staffNames.push(name);
+            editingStaffNames.push(name);
             showToast("Staff name added. Remember to save changes.", "success");
         }
 
@@ -4155,12 +4209,10 @@ const firebaseConfig = {
     }
 
     function editStaffName(idx) {
-        const editId = document.getElementById('settingResSelect').value;
-        const r = resources.find(x => x.id === editId);
-        if (!r || !Array.isArray(r.staffNames) || !r.staffNames[idx]) return;
+        if (!editingStaffNames[idx]) return;
 
         editingStaffNameIdx = idx;
-        document.getElementById('newStaffName').value = r.staffNames[idx];
+        document.getElementById('newStaffName').value = editingStaffNames[idx];
         document.getElementById('staffNameAddBtn').textContent = 'Update';
         document.getElementById('staffNameCancelEditLink').style.display = '';
     }
@@ -4173,11 +4225,9 @@ const firebaseConfig = {
     }
 
     function removeStaffName(idx) {
-        const editId = document.getElementById('settingResSelect').value;
-        const r = resources.find(x => x.id === editId);
-        if (!r || !Array.isArray(r.staffNames) || idx < 0 || idx >= r.staffNames.length) return;
-        if (!confirm(`Remove "${r.staffNames[idx]}" from the volunteer list?`)) return;
-        r.staffNames.splice(idx, 1);
+        if (idx < 0 || idx >= editingStaffNames.length) return;
+        if (!confirm(`Remove "${editingStaffNames[idx]}" from the volunteer list?`)) return;
+        editingStaffNames.splice(idx, 1);
         cancelStaffNameEdit();
         renderStaffNameList();
         showToast("Staff name removed. Remember to save changes.", "success");
@@ -4237,10 +4287,6 @@ const firebaseConfig = {
         if (indicator) indicator.remove();
         if (staffNameDragIdx === null) return;
 
-        const editId = document.getElementById('settingResSelect').value;
-        const r = resources.find(x => x.id === editId);
-        if (!r || !Array.isArray(r.staffNames)) { staffNameDragIdx = null; return; }
-
         // Visual order of the rows NOT being dragged, then splice the dragged item
         // in at the drop position — same approach as the sub-room reorder.
         const rows = [...container.querySelectorAll('.staff-name-row:not(.subroom-dragging)')];
@@ -4254,7 +4300,7 @@ const firebaseConfig = {
         const order = rows.map(row => parseInt(row.dataset.idx, 10));
         order.splice(dropVisualPos, 0, dragArrIdx);
 
-        r.staffNames = order.map(idx => r.staffNames[idx]);
+        editingStaffNames = order.map(idx => editingStaffNames[idx]);
         staffNameDragIdx = null;
         renderStaffNameList();
         showToast("Order updated. Remember to save changes.", "success");
@@ -4265,7 +4311,8 @@ const firebaseConfig = {
         const sourceRes = resources.find(x => x.id === editId);
         if (!sourceRes) return;
 
-        const names = sourceRes.staffNames || [];
+        // Apply what the editor currently shows (the working copy)
+        const names = editingStaffNames;
         if (names.length === 0) {
             showToast("No staff names to apply.", "error"); return;
         }
@@ -4401,7 +4448,7 @@ const firebaseConfig = {
     // Creating new resources with the option to clone settings (hours, closures,
     // all config) from an existing resource.
     async function addNewResource() {
-        const name = prompt("Name for new resource?");
+        const name = (prompt("Name for new resource?") || '').trim();
         if(!name) return;
         
         // If there are existing resources, show import options
@@ -4592,6 +4639,13 @@ const firebaseConfig = {
         if (!delId) return;
         const res = resources.find(r => r.id === delId);
         if (!res) return;
+        // The persistence guard (and the Firestore rules) refuse an empty resource
+        // list, so deleting the last resource would only fail downstream with a
+        // confusing error — surface it up front instead.
+        if (resources.length <= 1) {
+            showToast("Cannot delete the only resource. Create another resource first.", "error");
+            return;
+        }
         document.getElementById('deleteResourceName').textContent = `You are about to delete "${res.name}".`;
         document.getElementById('deleteResourcePassInput').value = '';
         document.getElementById('deleteResourceModal').style.display = 'flex';
@@ -4640,10 +4694,18 @@ const firebaseConfig = {
         if(!r) return;
         const updatedList = JSON.parse(JSON.stringify(resources));
         const target = updatedList.find(x => x.id === editId);
-        target.name = document.getElementById('editResName').value;
-        target.maxDuration = parseFloat(document.getElementById('editMaxDuration').value) || 2;
+        const newName = document.getElementById('editResName').value.trim();
+        if (!newName) return showToast("Resource name cannot be empty.", "error");
+        target.name = newName;
+
+        const newMaxDuration = parseFloat(document.getElementById('editMaxDuration').value);
+        if (isNaN(newMaxDuration) || newMaxDuration <= 0) {
+            return showToast("Max duration must be greater than 0.", "error");
+        }
+        target.maxDuration = newMaxDuration;
+
         target.hasStaffField = document.getElementById('editResOrientation').checked;
-        target.staffNames = r.staffNames || [];
+        target.staffNames = editingStaffNames.slice();
         const newViewMode = document.getElementById('editViewMode').value;
         if (newViewMode !== (r.viewMode || 'week')) {
             const modeLabel = newViewMode === 'day' ? 'Day View' : 'Week View';
@@ -4665,7 +4727,7 @@ const firebaseConfig = {
 
         // Save Advance Booking Limit Settings
         target.advanceLimitEnabled = document.getElementById('editAdvanceLimitEnabled').checked;
-        target.advanceLimitDays = parseInt(document.getElementById('editAdvanceLimitDays').value) || 0;
+        target.advanceLimitDays = Math.max(0, parseInt(document.getElementById('editAdvanceLimitDays').value) || 0);
         target.advanceLimitAdminBypass = document.getElementById('editAdvanceLimitAdminBypass').checked;
         
         // Save Cosmetic Close Minutes
@@ -4674,10 +4736,23 @@ const firebaseConfig = {
         // Save Color Palette
         target.colorPalette = document.getElementById('editColorPalette').value || 'default';
 
-        // Preserve closure dates from the in-memory resource (already updated by add/remove)
-        target.closuresByYear = r.closuresByYear || {};
+        // Closure dates come from the editor's working copy
+        target.closuresByYear = JSON.parse(JSON.stringify(editingClosures));
 
-        for(let i=0; i<7; i++) { target.hours[i*2] = parseFloat(document.getElementById(`s_${i}`).value) || 0; target.hours[(i*2)+1] = parseFloat(document.getElementById(`e_${i}`).value) || 0; }
+        // Operating hours, validated: within 0-24 and closing after opening
+        // (equal start/end means the day is closed and is allowed).
+        for (let i = 0; i < 7; i++) {
+            const dayStart = parseFloat(document.getElementById(`s_${i}`).value) || 0;
+            const dayEnd = parseFloat(document.getElementById(`e_${i}`).value) || 0;
+            if (dayStart < 0 || dayStart > 24 || dayEnd < 0 || dayEnd > 24) {
+                return showToast(`${DAYS[i]}: hours must be between 0 and 24.`, "error");
+            }
+            if (dayEnd < dayStart) {
+                return showToast(`${DAYS[i]}: closing time is before opening time.`, "error");
+            }
+            target.hours[i * 2] = dayStart;
+            target.hours[(i * 2) + 1] = dayEnd;
+        }
         showLoading(true);
         try {
             await saveResourceList(updatedList);
@@ -5019,7 +5094,10 @@ const firebaseConfig = {
         for (const id of modalPriority) {
             const el = document.getElementById(id);
             if (el && el.style.display === 'flex') {
-                closeModal(id);
+                // The settings editor may hold unsaved changes — route through the
+                // guarded close so Escape can't silently discard them.
+                if (id === 'settingsOverlay') closeSettings();
+                else closeModal(id);
                 return;
             }
         }

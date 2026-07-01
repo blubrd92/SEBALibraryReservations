@@ -342,7 +342,7 @@
         <div class="resource-manager">
             <label style="font-weight:bold; display:block; margin-bottom:5px;">Manage Resources:</label>
             <div class="flex gap">
-                <select id="settingResSelect" onchange="loadSettingsForEditor()" style="flex-grow:1;"></select>
+                <select id="settingResSelect" onchange="handleSettingsResourceSwitch()" style="flex-grow:1;"></select>
                 <button class="btn-success" onclick="addNewResource()">+ New Resource</button>
                 <button class="btn-danger" onclick="deleteResource()">Delete</button>
             </div>
@@ -542,7 +542,7 @@
         <div class="settings-footer">
             <button class="btn-success" onclick="saveAllSettings()">Save Changes</button>
             <button onclick="openResourceBackupModal()">⟲ Version History</button>
-            <button onclick="closeModal('settingsOverlay')">Cancel</button>
+            <button onclick="closeSettings()">Cancel</button>
         </div>
     </div>
 </div>
