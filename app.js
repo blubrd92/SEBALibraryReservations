@@ -873,9 +873,14 @@ const firebaseConfig = {
                 const startRect = startSlot.getBoundingClientRect();
                 const containerRect = container.getBoundingClientRect();
 
-                // Calculate pixel offset for quarter-hour start position
+                // Calculate pixel offset for a quarter-hour (half-slot) start.
+                // The dashed midline drawn by .quarter-hour-slot::before renders at
+                // (50% - 0.5px) of the slot's padding box, i.e. ~slotHeight/2 - 1 in
+                // border-box pixels, so nudge half-slot starts up 1px to sit on that
+                // line rather than just below it.
                 const slotHeight = startRect.height;
-                const startPixelOffset = startOffsetFraction * slotHeight;
+                let startPixelOffset = startOffsetFraction * slotHeight;
+                if (startOffsetFraction > 0) startPixelOffset -= 1;
                 
                 const colorIndex = bookingColorMap[booking.id];
                 const colorClass = `bg-color-${colorIndex}`;
@@ -888,15 +893,22 @@ const firebaseConfig = {
                 }
                 bookingEl.dataset.bid = booking.id;
                 
-                // Position relative to container, accounting for cell padding and quarter-hour offsets
-                const padding = 2; // matches .slot padding
+                // Position relative to the container. Subtract clientTop/clientLeft:
+                // an absolutely-positioned child's top/left resolve against the
+                // container's padding box, but the measured rects are relative to its
+                // border box, so the 1px container border would otherwise push every
+                // booking 1px down and right, off the grid lines.
+                const gap = 2; // small, symmetric inset so bookings sit just inside the grid lines
                 bookingEl.style.position = 'absolute';
-                bookingEl.style.left = (startRect.left - containerRect.left + container.scrollLeft + padding) + 'px';
-                bookingEl.style.top = (startRect.top - containerRect.top + container.scrollTop + padding + startPixelOffset) + 'px';
-                bookingEl.style.width = (startRect.width - padding * 2 - 1) + 'px'; // -1 for border-right
-                // Height based on duration (each slot = 0.5 hours), subtract padding and bottom border
-                const bookingHeight = (booking.data.duration * 2 * slotHeight) - padding * 2 - 1;
-                bookingEl.style.height = Math.max(bookingHeight, 20) + 'px'; // minimum 20px for visibility
+                bookingEl.style.left = (startRect.left - containerRect.left - container.clientLeft + container.scrollLeft + gap) + 'px';
+                bookingEl.style.top = (startRect.top - containerRect.top - container.clientTop + container.scrollTop + startPixelOffset + gap) + 'px';
+                bookingEl.style.width = (startRect.width - gap * 2 - 1) + 'px'; // -1 for the slot's border-right
+                // Height spans the duration (each 30-min slot = slotHeight), inset by the
+                // gap top and bottom so the block sits symmetrically between its grid lines
+                // and stacked bookings never overlap. The small floor keeps very short
+                // (15-min) blocks visible without exceeding their half-slot on compact rows.
+                const bookingHeight = (booking.data.duration * 2 * slotHeight) - gap * 2;
+                bookingEl.style.height = Math.max(bookingHeight, 10) + 'px';
                 
                 // Content
                 const anon = isBookingAnonymized(activeWeekKey, booking.dayIndex, res);
