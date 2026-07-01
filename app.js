@@ -923,8 +923,8 @@ const firebaseConfig = {
                 const displayName = anon ? 'Past Booking' : escapeHtml(booking.data.name);
                 const seriesIcon = booking.data.seriesId ? '<span class="series-indicator" title="Recurring series">🔁</span> ' : '';
 
-                // ~14px per line of booking text; 4px is the block's vertical padding.
-                const usableLines = Math.floor((Math.max(bookingHeight, 10) - 4) / 14);
+                // ~18px per line of booking text; 6px is the block's vertical padding.
+                const usableLines = Math.floor((Math.max(bookingHeight, 10) - 6) / 18);
                 let bookingHtml = '';
                 if (usableLines >= 1) bookingHtml += `<span class="slot-name">${seriesIcon}${displayName}</span>`;
                 // Time is demoted to "start · duration": the start (which the 30-min
