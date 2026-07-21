@@ -1,11 +1,11 @@
 // --- FIREBASE CONFIG ---
 const firebaseConfig = {
-  apiKey: "AIzaSyAKLTLBTH5KaJ0DiK2AUphu1w80yJwUwTI",
-  authDomain: "libraryscheduler-faf2f.firebaseapp.com",
-  projectId: "libraryscheduler-faf2f",
-  storageBucket: "libraryscheduler-faf2f.firebasestorage.app",
-  messagingSenderId: "286899383584",
-  appId: "1:286899383584:web:5826c1297f3c5bd28afb45"
+  apiKey: "AIzaSyDVt4BZ0j5f0Yg2NV4IE_cYZOYIRdIZ1bE",
+  authDomain: "sebalibraryscheduler.firebaseapp.com",
+  projectId: "sebalibraryscheduler",
+  storageBucket: "sebalibraryscheduler.firebasestorage.app",
+  messagingSenderId: "917364953191",
+  appId: "1:917364953191:web:193b5b706aacaba7d504c2"
 };
     // --- END CONFIG ---
 
